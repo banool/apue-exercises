@@ -1,5 +1,5 @@
 This should be readable as markdown. In sublime you should turn on C 
-syntax highlighting though.
+syntax highlighting though. For macOS I use Macdown.
 
 #  3 File I/O
 ## 3.1
@@ -292,4 +292,4 @@ main(int argc, char *argv[])
 ```
 
 ## 4.7
-
+For different actions and some special file names, the shell and kernel respectively have default umasks.

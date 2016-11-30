@@ -58,7 +58,8 @@ def main():
             codeFName = compiledFName + ".c"
             # If clean=True, we remove compiledFname
             if clean:
-                os.system("""rm "{}" """.format(compiledFName))
+                # Use -f so it doesn't complain if the file doesn't exist.
+                os.system("""rm -f "{}" """.format(compiledFName))
             else:
                 # Otherwise, write the lines we've collected to file and compile.
                 writeCode(code, codeFName, compiledFName)
