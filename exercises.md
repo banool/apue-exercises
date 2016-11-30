@@ -309,22 +309,60 @@ The changed time on a file changes when the inode undergoes changes. If the `unl
 TODO the myftw function in question is pretty in depth, might be worth checking out again. The depth of the scan is limited by the max number of file descriptors that a process can hold open. This is because the ancestor directories' fds are left open by the process after each recursive step. To solve this you could close file descriptors if you need to and work relative to a directory further down the directory structure, changing the relative start up and down as we go. Could be hard to keep track of what you've seen so far though.
 
 ## 4.11
-We won't compile this because it relies on a billion different things to compile. Copy this function into the `ftw8.c` file in the `filedir` folder and modify the Makefile, it'll compile it with all the necessary functions.
+We won't compile this because it relies on a billion different things to compile. Copy this function into the `ftw8.c` file in the `filedir` folder, it'll compile it with all the necessary functions.
 
 ```c NO
-static int					/* we return whatever func() returns */
-myftw(char *pathname, Myfunc *func)
+// TODO, this would be easier to just work on directly in the original file.
+```
+
+## 4.12
+`chroot` changes the location of `/`. If I chroot a process to `/home/daniel`, then I can no longer ascend back up the hierarchy. This is obviously handy for jailing people to subdirectories, for example by chrooting a user's login shell process.
+
+You can also use chroot to clone a filesystem, as you've done before to fix a broken file system. Only the superuser can use chroot.
+
+## 4.13
+Call `stat` and get the previous 3 times (access/modify/change). For the one we don't want to change, just copy across the value we got from stat (remember, **change** will be changed by the utimes call no matter what, the function only has options for access and modify).
+
+## 4.14
+This is a bit archaic, imagine that the mailbox is just a file (or directory, which is still a file). The access time is when you last read the email and the modify time is when mail was last received.
+
+## 4.15
+The change time isn't stored because, even if it was stored, you wouldn't be able to set it to the original time. You cannot cheat the change time, it is always based on when the inode data was actually changed.
+
+Depending on the utility (tar or cpio), you can tell it to keep the original access and/or modify times. For example, tar by default maintains the original modify time but you can use the `-m` switch to set it to extraction time. The access time is always set to extraction time.
+
+## 4.16
+```c
+#include "apue.h"
+#include <fcntl.h>
+
+int
+main(int argc, char *argv[])
 {
-	fullpath = path_alloc(&pathlen);	/* malloc PATH_MAX+1 bytes */
-										/* ({Prog pathalloc}) */
-	if (pathlen <= strlen(pathname)) {
-		pathlen = strlen(pathname) * 2;
-		if ((fullpath = realloc(fullpath, pathlen)) == NULL)
-			err_sys("realloc failed");
-	}
-	strcpy(fullpath, pathname);
-	return(dopath(func));
+    const char* dirname = "mydir";
+
+    long pathmax = pathconf(".", _PC_PATH_MAX);
+    printf("pathmax: %ld\n", pathmax);
+    char path[pathmax];
+    long curr_len;
+    // We keep looping until we exceed pathmax.
+    while ((curr_len = strlen(getcwd(path, pathmax))) < pathmax) {
+        // DIR_MODE is defined in apue.h
+        // Note, mkdir returns 0 on success, not the fd of the dir.
+        if (mkdir(dirname, DIR_MODE) < 0) {
+            perror("mkdir error, did you make sure mydir didn't exist before running");
+            return -1;
+        }
+        chdir(dirname);
+        printf("Current absolute path length: %ld\n", curr_len);
+    }
+    
+    return 0;
 }
 ```
 
+This program will eventually throw a segmentation fault (when we surpass pathmax). This only happens on macOS (because of getcwd). In the other 3 major OSes, it is possible to get a pathname longer than pathmax with a big buffer (created with lots of reallocs). However, most functions won't work with a pathname longer than pathmax anyway. `tar` can still archive this long directory hierarchy on all platforms, but in linux it can't be unarchived. TODO good question, interesting.
+
+## 4.17
+You can't just unlink something in /dev as a regular user, write permissions are turned off in there. TODO looking at /dev in macOS, it looks like lots of files have write permissions enabled, including /dev/fd/0 (and 1 and 2, but not the stdin/stdout/stderr symlinks?). You should check out how this behaves on linux.
 

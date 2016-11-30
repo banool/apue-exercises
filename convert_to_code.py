@@ -16,7 +16,9 @@ how it seems like the exercises are organised in the book.
 Make sure to have a newline at the end of your target file (exercises.md).
 Otherwise, it might miss code that runs to the end of the file.
 
-This script can also take "clean" in the args to remove all the compiled files.
+This script can take "clean" in the args to remove all the compiled files.
+This script can take "compile" in the args to force compile all the files, even
+those that have no changes in their code.
 
 You can include NO after ``` in order to prevent it being written/compiled.
 """
@@ -32,6 +34,7 @@ source = "exercises.md"
 targetDir = "exercises"
 
 clean = False
+forceCompile = False
 
 def main():
     os.system("mkdir -p " + targetDir)
@@ -93,7 +96,7 @@ def main():
 def writeCode(code, codeFName, compiledFName):
     # Check if the code already exists and if anything is different.
     # If it does and nothing has changed, no need to rewrite/recompile.
-    if existsUnchanged(code, codeFName):
+    if existsUnchanged(code, codeFName) and not forceCompile:
         print("{} unchanged".format(compiledFName.split("/")[-1]))
         return
     else:
@@ -128,4 +131,6 @@ if __name__ == "__main__":
     if len(argv) > 1:
         if argv[1] == "clean" or argv[1] == "--clean":
             clean = True
+        elif argv[1] == "compile" or argv[1] == "--compile":
+            forceCompile = True
     main()
