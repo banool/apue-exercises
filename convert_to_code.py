@@ -17,6 +17,8 @@ Make sure to have a newline at the end of your target file (exercises.md).
 Otherwise, it might miss code that runs to the end of the file.
 
 This script can also take "clean" in the args to remove all the compiled files.
+
+You can include NO after ``` in order to prevent it being written/compiled.
 """
 
 import os
@@ -24,6 +26,7 @@ from sys import argv
 
 marker_exercise = "## "
 marker_code = "```"
+marker_nocompile = "NO"
 
 source = "exercises.md"
 targetDir = "exercises"
@@ -38,12 +41,16 @@ def main():
 
     currentExercise = "0.0"
     inCode = False
+    noCompile = False
     code = []
     for line in content:
         start = line[:3]
+        lang  = line[3:]
 
         # This indicates the start or end of code.
         if start == marker_code:
+            if marker_nocompile in lang.upper():
+                noCompile = True
             inCode = not inCode
             continue
 
@@ -54,6 +61,11 @@ def main():
 
         # We've left a code block, write to file.
         if not inCode and len(code) > 0:
+            # If we hit ``` and noCompile is True, turn ignore this code.
+            if noCompile:
+                noCompile = False
+                code = []
+                continue
             compiledFName = os.path.join(targetDir, currentExercise)
             codeFName = compiledFName + ".c"
             # If clean=True, we remove compiledFname

@@ -1,5 +1,10 @@
-This should be readable as markdown. In sublime you should turn on C 
-syntax highlighting though. For macOS I use Macdown.
+# Exercises
+
+For code you don't want compiled, do triple dash c NO:
+`dash` `dash` `dash` `c` `[space]` `N` `O`.
+See exercise 4.11 for an example.
+
+You should have all of the source code from [here](http://www.apuebook.com/code3e.html) handy.
 
 #  3 File I/O
 ## 3.1
@@ -293,3 +298,33 @@ main(int argc, char *argv[])
 
 ## 4.7
 For different actions and some special file names, the shell and kernel respectively have default umasks.
+
+## 4.8
+After the call to unlink, the pathname pointing to the file no longer exists. This means we can't query it with du (directly anyway, we could call du on the parent directory and note that the size has changed). As such, in order to see that (for 15 seconds) the file contents still exist on disk because the process is open, we call df.
+
+## 4.9
+The changed time on a file changes when the inode undergoes changes. If the `unlink` function is called on a file with 2 or more links, the link counter will be decremented by one and the changed time will be updated to when `unlink` was called. These access/modification/change times are attached to the inode of course, not the filename which points to it.
+
+## 4.10
+TODO the myftw function in question is pretty in depth, might be worth checking out again. The depth of the scan is limited by the max number of file descriptors that a process can hold open. This is because the ancestor directories' fds are left open by the process after each recursive step. To solve this you could close file descriptors if you need to and work relative to a directory further down the directory structure, changing the relative start up and down as we go. Could be hard to keep track of what you've seen so far though.
+
+## 4.11
+We won't compile this because it relies on a billion different things to compile. Copy this function into the `ftw8.c` file in the `filedir` folder and modify the Makefile, it'll compile it with all the necessary functions.
+
+```c NO
+static int					/* we return whatever func() returns */
+myftw(char *pathname, Myfunc *func)
+{
+	fullpath = path_alloc(&pathlen);	/* malloc PATH_MAX+1 bytes */
+										/* ({Prog pathalloc}) */
+	if (pathlen <= strlen(pathname)) {
+		pathlen = strlen(pathname) * 2;
+		if ((fullpath = realloc(fullpath, pathlen)) == NULL)
+			err_sys("realloc failed");
+	}
+	strcpy(fullpath, pathname);
+	return(dopath(func));
+}
+```
+
+

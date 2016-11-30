@@ -18,3 +18,4 @@ This book was one of the 6 that Facebook gave me to prepare for my upcoming inte
 - Linux and the Unix Philosophy
 
 It seems like this book has the greatest practical use in that is is concise, considers code, and has exercises.
+
