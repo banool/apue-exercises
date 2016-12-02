@@ -106,8 +106,28 @@ def writeCode(code, codeFName, compiledFName):
     with open(codeFName, "w") as f:
         for i in code:
             f.write("{}\n".format(i))
+
+    # Check for user headers to be included. This is pretty primitive.
+    includes = []
+    for line in code:
+        # Looking for #include "myheader.h" for example.
+        if line[:10] == "#include \"":
+            name = line[10:-3]
+            if name != "apue":
+                path = os.path.join(targetDir, name)
+                includes.append(""""{}.c" """.format(path))
+
+    # Constructing the string for the additional files with which to compile.
+    from operator import add as op_add
+    from functools import reduce
+    # Just using this for fun to relive the Haskell days, an explicit
+    # for loop would be more sensible in practice.
+    includes = reduce(op_add, includes, "")
+
     # Compile the code.
-    command = """ gcc "{}" -o "{}" """.format(codeFName, compiledFName)
+    args = (codeFName, includes, compiledFName)
+    command = """gcc "{}" {} -o "{}" """.format(*args)
+    print(command)
     os.system(command)
 
 def existsUnchanged(code, codeFName):

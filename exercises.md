@@ -6,6 +6,8 @@ See exercise 4.11 for an example.
 
 You should have all of the source code from [here](http://www.apuebook.com/code3e.html) handy.
 
+The word **TODO** is used to denote things I haven't done yet or wasn't sure about.
+
 #  3 File I/O
 ## 3.1
 No, the data still passes through the kernel block buffers. Also known as the
@@ -365,4 +367,91 @@ This program will eventually throw a segmentation fault (when we surpass pathmax
 
 ## 4.17
 You can't just unlink something in /dev as a regular user, write permissions are turned off in there. TODO looking at /dev in macOS, it looks like lots of files have write permissions enabled, including /dev/fd/0 (and 1 and 2, but not the stdin/stdout/stderr symlinks?). You should check out how this behaves on linux.
+
+# 5
+
+## 5.1
+```c
+#include <stdio.h>
+#include "buftype.h"
+
+void mysetbuf(FILE *restrict stream, char *restrict buf);
+
+int main(int charc, char *argv[]) {
+    // Print the buf type of the output stream.
+    pr_stdio("stdout", stdout);
+    // Turn off buffering for stdout.
+    mysetbuf(stdout, NULL);
+    // Print the buf type of the stream now.
+    pr_stdio("stdout", stdout);
+    return 0;
+}
+
+void mysetbuf(FILE *restrict stream, char *restrict buf) {
+    // buf ? _IOFBF : _IONBF
+    // If buf, set fully buffered, otherwise turn off buffering.
+    // This conforms to the setbuf behaviour:
+    // If buf != NULL, set buffer to the provided buffer (must be BUFSIZ).
+    // If buf == NULL, turn buffering off.
+    // Even though this specifies fully buffered, the system might choose
+    // line buffering anyway if appropriate (e.g. terminal as stdin/out).
+    if (setvbuf(stream, buf, buf ? _IOFBF : _IONBF, BUFSIZ) < 0)
+        perror("setvbuf error");
+}    
+```
+
+## 5.2
+```c
+#include "apue.h"
+
+#define NEW_MAXLINE 4
+
+int
+main(void) {
+    char buf[MAXLINE];
+    while (fgets(buf, NEW_MAXLINE, stdin) != NULL)
+        if (fputs(buf, stdout) == EOF)
+            perror("output error");
+    if (ferror(stdin))
+        perror("input error");
+    exit(0);
+}
+```
+
+It still copies the stdin to stdout fine. It also still breaks up input/output by newline. The difference is that, if a line is longer than 4 chars, it will be broken up into multiple buffers of length 4 until we hit the newline (which is included in the buffer remember). Each time we fill a buffer, it is a new call to `fgets`. `fputs` doesn't care about newlines in buffer, it just stops upon hitting a null byte `'\0'`. This is in contrast to gets and puts, which would fail if the buffer wasn't long enough for the whole line.
+
+## 5.3
+```c
+#include <stdio.h>
+
+int main(int charc, char *argv[]) {
+    int n = printf("Printing a string\n");
+    printf("Return value of previous print: %d\n", n);
+    printf("The return value of printf is the number of chars printed, not including the null byte.\n");
+    return 0;
+}
+```
+
+A return value of 0 means 0 chars printed.
+
+## 5.4
+`getc` and `getchar` return an int, not a char. EOF is normally defined to be `-1`. This isn't a problem on systems where chars are a signed type, but when it is unsigned then the termination clause (when c == EOF) might never trigger because the return of `getc`/`getchar` might not equal the EOF value anymore. The 4 major systems discussed here use signed chars tho so no worries.
+
+## 5.5
+I imagine you would have to open the FILE* struct and get the file descriptor from inside it.
+
+Nope ^. You can use the `fileno` function to get the file descriptor of a FILE* struct. Make sure to call `fflush` before `fsync`, so that the user space buffers (stdio libs) are flushed to the kernel buffers first. `fsync` then flushes the kernel buffers to disk.
+
+## 5.6
+When `fgets` is called (line by line function), anything in the stdout buffer is flushed.
+
+## 5.7
+```c NO
+#include <stdio.h>
+
+FILE *fmemopen(void *buf, size_t size, const char *mode);
+```
+
+This is a pretty hefty question, but probably worth doing. TODO.
+In the code for this question in the answers (as well as a lot previously) we see the `restrict` keyword used quite often. [This](https://en.wikipedia.org/wiki/Restrict) wikipedia article is actually very illuminating/clear about how it works.
 
