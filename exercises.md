@@ -455,3 +455,126 @@ FILE *fmemopen(void *buf, size_t size, const char *mode);
 This is a pretty hefty question, but probably worth doing. TODO.
 In the code for this question in the answers (as well as a lot previously) we see the `restrict` keyword used quite often. [This](https://en.wikipedia.org/wiki/Restrict) wikipedia article is actually very illuminating/clear about how it works.
 
+Clarification about set-uid-bit: If this bit is set for an executable file, then whenever a user other than the owner executes the file, that user acquires all the file read/write/execute privileges of the owner in accessing any of the owner's other files!
+
+See page 181. Have a good think about this and you'll see why set-uid is secure. If the set-uid-bit is set on a program, when a user runs that program, that process instance will have the permissions of the program owner. This means that through this process, the user will have access to whatever the program owner has access too. 
+
+The login and passwd programs are set-uid programs, and their owner is root. This means that a user running these programs will have root permissions, but only through that program. This means that, even though the process has root permissions, the user can only do whatever functionality the program has defined. A user can't make a root set-uid program themselves without root permissions. However this means that if there are any vulnerabilities in a root set-uid program, then the whole system is at risk.
+
+# 6
+## 6.1
+Depends on the implementation. On Mac OS X you can't get to the encrypted password (the regular password file is shadowed automatically). On Linux there are a bunch of functions which can access the shadow password but you need superuser privileges to use them. The shadow password files aren't accessible by the world.
+
+## 6.2
+Unfortunately I'm on Mac OS X but this code should hopefully work on Linux.
+
+```c NO
+#include <shadow.h>
+
+int main(int charc, char *argv[]) {
+    char buf[32];
+    get_encrypted_pword(&buf, 32, "daniel");
+    printf("encrypted pword: %s\n", buf);
+    return 0;
+}
+
+int get_encrypted_pword(char *buf, int size, const char *name) {
+    struct spdw shadow;
+    shadow = getspnam(name);
+    int len_pwd = strlen(shadow->sp_pwdp);
+    if (len_pwd > (size-1))
+        return -1;
+    // +1 so a null byte is appended.
+    strncpy(buf, shadow->sp_pwdp, len_pwd+1);
+    return len_pwd;
+}
+```
+
+Here is a similar example to get the description of a user under Mac OS X.
+
+```c
+#include <sys/types.h>
+#include <pwd.h>
+#include <uuid/uuid.h>
+#include <string.h>
+#include <stdio.h>
+
+int get_encrypted_pword(char *buf, int size, const char *name);
+
+int main(int charc, char *argv[]) {
+    char buf[32];
+    get_encrypted_pword(buf, 32, "daniel");
+    printf("User description: %s\n", buf);
+    return 0;
+}
+
+int get_encrypted_pword(char *buf, int size, const char *name) {
+    struct passwd pwdstruct;
+    pwdstruct = *getpwnam(name);
+    int len_pwd = strlen(pwdstruct.pw_gecos);
+    if (len_pwd > (size-1))
+        return -1;
+    // +1 so a null byte is appended.
+    strncpy(buf, pwdstruct.pw_gecos, len_pwd+1);
+    return len_pwd;
+}
+```
+
+## 6.3
+```c
+#include <sys/utsname.h>
+#include <stdio.h>
+
+int main(int charc, char *argv[]) {
+    struct utsname u;
+    if (uname(&u) < 0) {
+        perror("uname error");
+        return -1;
+    }
+    
+    printf("sysname:  %s\n", u.sysname);
+    printf("nodename: %s\n", u.nodename);
+    printf("release:  %s\n", u.release);
+    printf("version:  %s\n", u.version);
+    printf("machine:  %s\n", u.machine);
+    return 0;
+}
+```
+
+Compared to `uname -a`, which prints all the options, `uname -a` prints them all on one line space separated.
+
+## 6.4
+Considering that time is a 32 bit signed value, the unix end of time is roughly 2038: `1970 + (2^31/60/60/24/365)`. After we pass this, time will wrap back to roughly 1901: `1970 - (2^31/60/60/24/365)`.
+
+## 6.5
+```c
+#include <time.h>
+#include <stdio.h>
+#include <stdlib.h> // For setenv
+
+#define BUF_SIZE 64
+
+int main(int charc, char *argv[]) {
+    char buf[BUF_SIZE];
+
+    time_t sec_since_epoch = time(NULL);
+    struct tm tmstruct = *localtime(&sec_since_epoch);
+    if (strftime(buf, BUF_SIZE, "%a %e %b %Y %I:%M:%S %Z", &tmstruct) == 0) {
+        perror("buffer too small");
+        return -1;
+    }
+    printf("%s\n", buf);
+    
+    // Changing TZ to UTC. It defaults to UTC.
+    setenv("TZ", "lsahglkdsad", 1);
+    tmstruct = *localtime(&sec_since_epoch);
+    if (strftime(buf, BUF_SIZE, "%a %e %b %Y %I:%M:%S %Z", &tmstruct) == 0) {
+        perror("buffer too small");
+        return -1;
+    }
+    printf("%s\n", buf);
+    return 0;
+}
+```
+
+
