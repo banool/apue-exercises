@@ -577,4 +577,88 @@ int main(int charc, char *argv[]) {
 }
 ```
 
+# 7
+## 7.1
+13 is the length of hello, world + the null byte. Because the function doesn't `return` or `exit`, the program exits with the return value of the printf. This is certainly not something you should rely upon, and under ISO C (if the extensions are on) the return value will always be 0. Under macOS Sierra it returns 0.
+
+## 7.2
+`man 3 exit` describes this:
+
+1. Call the functions registered with the atexit(3) function, inthe reverse order of their registration.
+2. Flush all open output streams.
+3. Close all open streams.
+4. Unlink all files created with the tmpfile(3) function.
+
+If the program is run interactively, the lines will be outputted line by line at step 1. This is because running a process interactively generally means line buffering.
+
+If the program is piped out to something (meaning fully buffered), the lines will be printed in step 2.
+
+## 7.3
+Nope.
+
+## 7.4
+The answer in the book is:
+This provides a way to terminate the process when it tries to dereference a null error, a common C programming error.
+
+But it doesn't really explain how this works. TODO.
+
+## 7.5
+The answer in the book is:
+```c NO
+typedef void Exitfunc(void);
+int atexit(Exitfunc *func);
+```
+I don't really get the point of this. I was expecting the answer to be more complicated than this, this is really just an alias for the `void func(void*)` prototype.
+
+## 7.6
+Probably yes and maybe. It just initialises the block of memory to all zeroes.
+
+## 7.7
+They're allocated at runtime (when executed by one of the `exec` functions).
+
+## 7.8
+A program on disk contains a bunch of extra stuff that doesn't exist in the process when it's executed into memory. This includes symbol tables, thingies used for debugging. Use the `strip`(1) utility to get rid of these from a compiled program.
+
+## 7.9
+Shared libraries are bloody big hey. If you don't use them, the libraries need to be included in the executables (think the entire stdio/stdlib library, at the least).
+
+## 7.10
+Only if val != 0. If val == 0, `ptr` points to `val;`, which ceases to exist outside of the if statement.
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+int f1(int val);
+
+int main(int argc, char *argv[]) {
+    printf("val = 2: %d <- should equal 1\n", f1(2));
+    printf("val = 0: %d <- should equal 6\n", f1(0));
+    return 0;
+}
+
+int f1(int val) {
+    int num = 0;
+    int *ptr = &num;
+    
+    if (val == 0) {
+        int val;
+        val = 5;
+        ptr = &val;
+    }
+    int i = 0;
+    char *waste;
+    while (i < 200) {
+        waste = calloc(100000, 100000);
+        waste[80000] = 1;
+        usleep(50000);
+        i++;
+    }
+    
+    return (*ptr + 1);
+}
+```
+
+TODO i'm not sure if my above conclusion is correct, and this program works, I probably need to scramble the memory around a bit first before it works. Definitely TODO.
 
