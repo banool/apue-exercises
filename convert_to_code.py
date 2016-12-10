@@ -1,4 +1,4 @@
-#!/usr/local/bin/python3
+#!/usr/bin/env python3
 
 """
 This script exists specifically for the exercises in Advanced Programming
@@ -11,7 +11,9 @@ with the name of the exercise. E.g. If the subheading is 3.4 and code is found,
 it will write it to 03.04.c and compile it to 03.04
 
 Note that it only expects there to be one code segment per exercise, as this is
-how it seems like the exercises are organised in the book.
+how it seems like the exercises are organised in the book. Update: If there is
+more than one code snippet in an exercise, it will now number them like this:
+08.01, 08.01.2, 08.01.3, etc.
 
 Make sure to have a newline at the end of your target file (exercises.md).
 Otherwise, it might miss code that runs to the end of the file.
@@ -32,6 +34,7 @@ marker_nocompile = "NO"
 
 source = "exercises.md"
 targetDir = "exercises"
+libDir = "../lib"
 
 clean = False
 forceCompile = False
@@ -43,6 +46,7 @@ def main():
         content = f.read().splitlines()
 
     currentExercise = "0.0"
+    numSnippetsInExercise = 0
     inCode = False
     noCompile = False
     code = []
@@ -54,6 +58,9 @@ def main():
         if start == marker_code:
             if marker_nocompile in lang.upper():
                 noCompile = True
+                numSnippetsInExercise -= 1
+            if not inCode:
+                numSnippetsInExercise += 1
             inCode = not inCode
             continue
 
@@ -70,6 +77,8 @@ def main():
                 code = []
                 continue
             compiledFName = os.path.join(targetDir, currentExercise)
+            if numSnippetsInExercise > 1:
+                compiledFName = compiledFName + "." + str(numSnippetsInExercise)
             codeFName = compiledFName + ".c"
             # If clean=True, we remove compiledFname
             if clean:
@@ -88,6 +97,7 @@ def main():
             exercise = line.split()[1]
             major, minor = exercise.split(".")
             currentExercise = major.zfill(2) + "." + minor.zfill(2)
+            numSnippetsInExercise = 0
 
         # Don't worry about ==, ignore those.
         # We ignore every other type of line from this point really
@@ -110,11 +120,15 @@ def writeCode(code, codeFName, compiledFName):
     # Check for user headers to be included. This is pretty primitive.
     includes = []
     for line in code:
+        name = None
         # Looking for #include "myheader.h" for example.
         if line[:10] == "#include \"":
             name = line[10:-3]
+        if line[:13] == "//-#include \"":
+            name = line[13:-3]
+        if name:
             if name != "apue":
-                path = os.path.join(targetDir, name)
+                path = os.path.join(libDir, name)
                 includes.append(""""{}.c" """.format(path))
 
     # Constructing the string for the additional files with which to compile.
@@ -125,8 +139,8 @@ def writeCode(code, codeFName, compiledFName):
     includes = reduce(op_add, includes, "")
 
     # Compile the code.
-    args = (codeFName, includes, compiledFName)
-    command = """gcc "{}" {} -o "{}" """.format(*args)
+    args = (libDir, codeFName, includes, compiledFName)
+    command = """gcc -g -I{} -D_GNU_SOURCE "{}" {} -o "{}" """.format(*args)
     print(command)
     os.system(command)
 

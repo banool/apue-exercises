@@ -8,6 +8,10 @@ You should have all of the source code from [here](http://www.apuebook.com/code3
 
 The word **TODO** is used to denote things I haven't done yet or wasn't sure about.
 
+To include a file in the lib dir (e.g. error.c) do this:
+//-#include "error.c"
+Dirty I know but the alternative is to try and copy the makefiles that the original code was using.
+
 #  3 File I/O
 ## 3.1
 No, the data still passes through the kernel block buffers. Also known as the
@@ -470,10 +474,14 @@ Unfortunately I'm on Mac OS X but this code should hopefully work on Linux.
 
 ```c NO
 #include <shadow.h>
+#include <string.h>
+#include <stdio.h>
+
+int get_encrypted_pword(char *buf, int size, const char *name);
 
 int main(int charc, char *argv[]) {
     char buf[32];
-    get_encrypted_pword(&buf, 32, "daniel");
+    get_encrypted_pword(buf, 32, "daniel");
     printf("encrypted pword: %s\n", buf);
     return 0;
 }
@@ -661,4 +669,282 @@ int f1(int val) {
 ```
 
 TODO i'm not sure if my above conclusion is correct, and this program works, I probably need to scramble the memory around a bit first before it works. Definitely TODO.
+
+# 8
+TODO process accounting, I didn't really do that properly.
+
+## 8.1
+```c
+#include "apue.h"
+
+int globvar = 6;        /* external variable in initialized data */
+
+int
+main(void)
+{
+    int     var;        /* automatic variable on the stack */
+    pid_t   pid;
+
+    var = 88;
+    printf("before vfork\n");   /* we don't flush stdio */
+    if ((pid = vfork()) < 0) {
+        perror("vfork error");
+        return -1;
+    } else if (pid == 0) {      /* child */
+        globvar++;               /* modify parent's variables */
+        var++;
+        exit(0);               /* child terminates */ // NOTE
+    }
+
+    /* parent continues here */
+    printf("pid = %ld, glob = %d, var = %d\n", (long)getpid(), globvar,
+      var);
+    exit(0);
+}
+```
+
+You'll notice that changing the exit on the line marked "NOTE" does not change the output. This is because, while the stdio libs flushes the buffer of the child upon the exit, it doesn't actually close the stream because the kernel does that anyway later. If the child *did* close the stream, the final printf wouldn't work because we closed stdout (remember the child and the parent share the file streams) with a vfork.
+
+To simulate the behaviour of closing the streams, we can actually close the streams before calling exit, like so:
+
+```c
+#include "apue.h"
+
+int globvar = 6;        /* external variable in initialized data */
+
+int
+main(void)
+{
+    int     var;        /* automatic variable on the stack */
+    pid_t   pid;
+
+    var = 88;
+    printf("before vfork\n");   /* we don't flush stdio */
+    if ((pid = vfork()) < 0) {
+        perror("vfork error");
+        return -1;
+    } else if (pid == 0) {      /* child */
+        globvar++;               /* modify parent's variables */
+        var++;
+        fclose(stdout);
+        exit(0);               /* child terminates */ // NOTE
+    }
+
+    /* parent continues here */
+    printf("pid = %ld, glob = %d, var = %d\n", (long)getpid(), globvar,
+      var);
+    exit(0);
+}
+```
+You'll notice that the final printf doesn't print, of course. Keep in mind that it is the stdout stream that is closed; the STDOUT_FILENO file descriptor isn't closed. However some stdio libraries do also close the fd, in which case you need to `dup` before calling `fclose`.
+
+## 8.2
+I imagine vfork will occupy the stack frame of the function that calls it? According to the manpage however:
+> vfork() can normally be used just like fork.  It does not work, however, to return while running in the childs context from the procedure that called vfork() since the eventual return from vfork() would then return to a no longer existent stack frame.
+
+```c
+// vforking from a chile
+#include <unistd.h>
+#include <stdio.h>
+
+void myfunc();
+
+int main(int charc, char *argv[]) {
+    if ((setvbuf(stdout, NULL, _IONBF, 0)) != 0) {
+        perror("setvbuf error");
+        return -1;
+    }
+    printf("main here!\n");
+    myfunc();
+    printf("back to main!\n");
+    return 2;
+}
+
+void myfunc() {
+    pid_t pid;
+    
+    if ((pid = vfork()) < 0) {
+        perror("vfork error");
+        return;
+    } else
+    if (pid == 0) { // Child
+        printf("sup dog it's the child after vfork\n");
+        // If you don't have something like
+        // _exit(0);
+        // here, you're going to get a segfault.
+    } else {        // Parent
+        printf("parent after vfork!\n");
+    }
+    // At this point both the parent and child will try to implicitly return.
+    // You could also have an explicit return, it would still fuck up.
+}
+```
+
+If you run this and then try to check the output, you'll see the return is neither 1 or 2, but something like 139 or whatever the segfault code is:
+
+    ./exercises/08.02
+    "$?"
+    -bash: 139: command not found
+
+The problem is that after the child returns, the stack pops back to main and the child's version of main can then do whatever the hell it wants to do. If it had another function to do next, this other function could then change the memory of main if it wants (e.g. making a buffer of zeroes), it could do anything. The return information from a call is often stored in the stack frame for that function. So when the parent then returns from myfunc, the return information might've been overwritten by the child. This is a pretty poor explanation, the explanation in answer in the book is much better. TODO go read that.
+
+## 8.3
+```c
+#include "apue.h"
+//-#include "prexit.c"
+//-#include "error.c"
+#include <sys/wait.h>
+#include <string.h> // for strsignal
+
+#define MYFLAGS WEXITED | WSTOPPED | WCONTINUED
+
+void print_info(siginfo_t *info);
+
+int
+main(void)
+{
+	// int waitid(idtype_t idtype, id_t id, siginfo_t *infop, int options);
+	pid_t	pid;
+	siginfo_t  info;
+
+	if ((pid = fork()) < 0)
+		err_sys("fork error");
+	else if (pid == 0)				/* child */
+		exit(7);
+
+	if (waitid(P_PID, pid, &info, MYFLAGS) != 0)		/* wait for child */
+		err_sys("wait error");
+	print_info(&info);				/* and print its status */
+
+	if ((pid = fork()) < 0)
+		err_sys("fork error");
+	else if (pid == 0)				/* child */
+		abort();					/* generates SIGABRT */
+
+	if (waitid(P_PID, pid, &info, MYFLAGS) != 0)		/* wait for child */
+		err_sys("wait error");
+	print_info(&info);				/* and print its status */
+
+	if ((pid = fork()) < 0)
+		err_sys("fork error");
+	else if (pid == 0)				/* child */
+		pid /= 0;				/* divide by 0 generates SIGFPE */
+
+	if (waitid(P_PID, pid, &info, MYFLAGS) != 0)		/* wait for child */
+		err_sys("wait error");
+	print_info(&info);					/* and print its status */
+
+	exit(0);
+}
+
+void print_info(siginfo_t *info) {
+    if (info->si_code == CLD_EXITED) {
+        printf("normal termination, exit status %d\n", info->si_status);
+     } else {
+        printf("abnormal termination, signal number = %d %s\n", 
+	    info->si_status, strsignal(info->si_status));
+    }
+}
+	
+
+```
+wait1 prints the following
+
+> normal termination, exit status = 7
+> abnormal termination, signal number = 6 (core file generated)
+> abnormal termination, signal number = 8 (core file generated)
+
+My program should print the same kind of information.
+
+## 8.4
+This happens because we have the parent write first, then the child. After the parent has written, it doesn't wait for the child to do its thing, it just terminates. As such, the next call can occur before the child finishes writing. If we had the child write first, with the parent waiting for it, this wouldn't be a problem, because the next call of `./tellwait1` only occurs once the parent exits.
+
+To correct this we either need to let the child write first (i.e. be the one to do whatever first, with the parent waiting for it) or we need to make the parent wait for the child as well.
+
+## 8.6
+```c
+//-#include "error.c"
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include "apue.h"
+
+int main(int charc, char * argv[]) {
+	
+	pid_t pid;
+	char buf[20];
+	
+	if ((pid = fork()) < 0) {
+		err_sys("fork");
+	} else
+	if (pid == 0) {
+		printf("this is the child, trying to exit!\n");
+		exit(EXIT_SUCCESS);
+	} else {
+		printf("this is the parent, not waiting for the child\n");
+		sprintf(buf, "ps %ld", (long int)pid);
+		system(buf);
+	}
+	return 0;
+}
+```
+
+When you run this program, you'll see something like this from ps:
+    
+      PID TTY      STAT   TIME COMMAND
+    22909 pts/1    Z+     0:00 [08.06] <defunct>
+
+This indicates that the process is a zombie. At the time of the ps call the parent hasn't terminated, so the zombie is still the child of the original parent. After the parent ends, if we do `ps <pid>` where <pid> is the pid printed from the first ps, we'll see that it's gone. That's because the zombie was inherited by init and then had wait called for it.
+
+## 8.7
+
+The question says to peek at the DIR struct for my implementation, but it very much seems
+like you can't do that:
+
+> /* This is the data type of directory stream objects.
+> The actual structure is opaque to users. */
+
+Instead I've pulled the fd from the DIR struct and called fcntl on it.
+
+```c
+/* Remember, opendir/fopen/etc. are part of the stdlib (3) but open is a system call (2). */
+
+#include <stdio.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <sys/types.h>
+#include <fcntl.h>
+
+int main(int charc, char *argv[]) {
+	DIR *dir;
+	int dir_fd;
+	
+	/* Section 3, stdio. POSIX mandates that the close-on-exec flag must be set */
+	dir = opendir("/");
+	dir_fd = dirfd(dir);
+	printf("close on exec flag: %d\n", fcntl(dir_fd, F_GETFD));
+	closedir(dir);
+	
+	/* Section 2, system calls. */
+	dir_fd = open("/", O_RDONLY);
+	printf("close on exec flag: %d\n", fcntl(dir_fd, F_GETFD));
+	
+	return 0;
+}
+```
+
+As expected, the flag is set when using the stdlib and not when using system calls.
+
+
+
+
+
+
+
+
+
+
+
+
+
 
