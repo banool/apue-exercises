@@ -8,10 +8,11 @@
 
 int main(int charc, char *argv[]) {
 	DIR *dir;
+	int dir_fd;
 	
-	/* Section 3, stdio lib. POSIX mandates that the close-on-exec flag must be set */
+	/* Section 3, stdio. POSIX mandates that the close-on-exec flag must be set */
 	dir = opendir("/");
-	int dir_fd = dirfd(dir);
+	dir_fd = dirfd(dir);
 	printf("close on exec flag: %d\n", fcntl(dir_fd, F_GETFD));
 	closedir(dir);
 	

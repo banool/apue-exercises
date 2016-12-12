@@ -901,8 +901,8 @@ This indicates that the process is a zombie. At the time of the ps call the pare
 The question says to peek at the DIR struct for my implementation, but it very much seems
 like you can't do that:
 
-> /* This is the data type of directory stream objects.
-> The actual structure is opaque to users. */
+> This is the data type of directory stream objects.
+> The actual structure is opaque to users.
 
 Instead I've pulled the fd from the DIR struct and called fcntl on it.
 
@@ -935,16 +935,63 @@ int main(int charc, char *argv[]) {
 
 As expected, the flag is set when using the stdlib and not when using system calls.
 
+# 9
 
+## 9.1
 
+When a user logs out, the `login` process exits and the `init` process detects this (with `wait`). Upon detecting this, it writes the output to the wtmp file.
 
+WRONG. Yes init detects when the login shell dies, but by catching the SIGCHLD signal.
 
+For network logins, init doesn't play a part in this. Instead the networking daemon does it, e.g. `telnetd`.
 
+## 9.2
 
+I've already written something like this in session_ids.c; here is a modified version displaying the id of the controlling terminal (or lack thereof).
 
+```c
+#include <unistd.h>
+#include <stdio.h>
+#include <fcntl.h>
 
+/* This program demonstrates that the pid, pgid and "sid" of
+** the leader of a new session are all the same */
 
+int main(int argc, char *argv[]) {
+	pid_t pid;
 
+	if ((pid = fork()) < 0) {
+		perror("fork error");
+		return -1;
+	} else
+	if (pid == 0) {
+		// Wait for the parent to die.
+		while (getppid() != 1) {
+			printf("Waiting for parent to die.\n");
+			sleep(1);
+		}
 
+		pid = setsid();
+
+		printf("pid, pgid and \"sid\" should be the same:\n");
+		printf("pid: %d pgid: %d sid: %d\n", getpid(), getpgrp(), getsid(0));
+
+		if ((open("/dev/tty", O_RDWR)) < 0) {
+			printf("Child has no controlling terminal!\n");
+		} else {
+			printf("Child has a controlling terminal!\n");
+		}
+
+	} else {
+		if ((open("/dev/tty", O_RDWR)) < 0) {
+			printf("Parent has no controlling terminal!\n");
+		} else {
+			printf("Parent still has a controlling terminal!\n");
+		}
+		_exit(0);
+	}
+	return 0;
+}
+```
 
 
