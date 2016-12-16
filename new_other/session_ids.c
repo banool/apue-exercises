@@ -12,10 +12,9 @@ int main(int argc, char *argv[]) {
 	if ((pid = fork()) < 0) {
 		perror("fork error");
 		return -1;
-	} else
-	if (pid == 0) {
+	} else if (pid == 0) {
 		// Wait for the parent to die.
-		while (getppid() != 1) {
+		while (getppid() != 1){
 			printf("Waiting for parent to die.\n");
 			sleep(1);
 		}

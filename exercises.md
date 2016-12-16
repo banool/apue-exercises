@@ -994,4 +994,39 @@ int main(int argc, char *argv[]) {
 }
 ```
 
+# 10
+
+## 10.1
+```c
+#include "apue.h"
+//-#include "error.c"
+
+static void	sig_usr(int);	/* one handler for both signals */
+
+int
+main(void)
+{
+	if (signal(SIGUSR1, sig_usr) == SIG_ERR)
+		err_sys("can't catch SIGUSR1");
+	if (signal(SIGUSR2, sig_usr) == SIG_ERR)
+		err_sys("can't catch SIGUSR2");
+	// There used to be a for( ; ; ) here.
+		pause();
+}
+
+static void
+sig_usr(int signo)		/* argument is signal number */
+{
+	if (signo == SIGUSR1)
+		printf("received SIGUSR1\n");
+	else if (signo == SIGUSR2)
+		printf("received SIGUSR2\n");
+	else
+		err_dump("received signal %d\n", signo);
+}
+```
+
+Without the `for( ; ; )`, instead of continually catching the two signals (`SIGUSR1` AND `SIGUSR2`), it catches a signal only once and then terminates.
+
+## 10.2
 
