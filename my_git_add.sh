@@ -1,3 +1,3 @@
-./convert_to_code.py clean
+./to_code.py clean
 git add -u
-git add exercises
+git add code

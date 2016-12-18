@@ -1026,7 +1026,450 @@ sig_usr(int signo)		/* argument is signal number */
 }
 ```
 
-Without the `for( ; ; )`, instead of continually catching the two signals (`SIGUSR1` AND `SIGUSR2`), it catches a signal only once and then terminates.
+Without the `for( ; ; )`, instead of continually catching the two signals (`SIGUSR1` AND `SIGUSR2`), it pauses and catches a signal only once and then terminates.
 
 ## 10.2
 
+```c
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+
+int sig2str(int signo, char *str);
+
+int main(int argc, char *argv[]) {
+    char buf[32];
+    sig2str(5, buf);
+    printf("sig 5: %s\n", buf);
+    return 0;
+}
+
+
+int sig2str(int signo, char *str) {
+    if (signo < 0 || signo > NSIG) {
+        return -1;
+    }
+    
+    // It's up to the caller to make sure there is
+    // enough room in str for the return of strsignal
+    // (plus a null byte \0).
+    strcpy(str, strsignal(signo));
+    
+    return 0;
+}
+```
+
+## 10.3
+
+main -> sleep -> sig_int -> sig_alrm
+           |                    |
+            --------------------
+
+When the sig_alarm comes in, the long_jmp just jumps straight back to sleep, essentially aborting/skipping sig_int entirely.
+
+## 10.4
+Race condition. If the alarm fires before we ever get to the set_jmp we're going to have problems. This could happen if the system is under heavy load so the alarm is called, then other processes are all serviced for a duration longer than the alarm. If the set_jmp hasn't been called, then when long_jmp is called in the sig_alrm it's going to have nowhere to jump so behaviour will be undefined.
+
+## 10.5
+
+TODO. The plan is to have a queue of timers. When a timer pops, you iterate through the queue (in the sig_alrm signal handler) and decrement each timer's value in the queue by the amount that just elapsed.
+
+```c NO
+#include <sys/time.h>
+#include <stdio.h>
+
+#define MAX_ALARMS 32
+
+int queue[MAX_ALARMS];
+int latest;
+
+void pop();
+int set_timer(int msecs);
+
+int main(int argc, char *argv[]) {
+    
+    struct itimerval *value;
+    getitimer(ITIMER_REAL, value);
+    printf("hey\n");
+    printf("curr: %6ld\n", value->it_value.tv_sec);
+    
+    return 0;
+}
+
+// Takes milliseconds.
+int set_timer(int msecs) {
+    latest = msecs;
+    
+    pop();
+    
+    return 0;
+}
+    
+void pop() {
+
+}
+```
+
+## 10.6
+```c
+// Remember, this line below will check ../lib for such a file.
+#include "apue.h"
+//-#include "tellwait.c"
+//-#include "error.c"
+
+#include <stdio.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+void sig_int(int arg);
+
+FILE *tmp;
+
+// If you had this, it would also not be shared.
+// You have to do something special to share vars like this.
+//int counter = 1;
+
+static volatile sig_atomic_t sigflag; /* set nonzero by sig handler */ 
+static sigset_t newmask, oldmask, zeromask; 
+static void sig_usr (int signo) { sigflag = 1; }
+
+int main(int argc, char *argv[]) {
+    
+    // For some reason the tmpfile isn't working.
+    
+    if ((tmp = tmpfile()) == NULL) {
+        err_sys("tmpfile error");
+    }
+
+    //if ((tmp = fopen("tmpfilebois", "w+")) == NULL)
+    //    err_sys("fopen error");
+
+    printf("value of close on exec flag: %d (sanity check)\n", fcntl(fileno(tmp), F_GETFD));
+
+    putc('0', tmp);
+    putc('\n', tmp);
+    fflush(tmp); 
+    // Without this fflush, the 0 might still be in the buffer after the fork so
+    // it might get written to tmp twice.
+
+    int counter = 1;
+    
+    pid_t pid;
+
+    TELL_WAIT();
+    
+    if ((pid = fork()) < 0) {
+        err_sys("fork error");
+    } else
+    if (pid == 0) {
+
+        // Don't put the signal catching code in the child, let it die.
+
+        for (;;) {
+            // Make the child write first yeah?
+            // If the parent writes first the child might not be waiting yet?
+            WAIT_PARENT();
+            printf("child writing %d\n", counter);
+            fprintf(tmp, "c%d\n", counter);
+            fflush(tmp);
+            counter++;
+            sleep(1);
+            TELL_PARENT(getppid());
+        }  
+    } else {
+
+        // Only put the signal catching code in the parent, so the handler
+        // is only run once and the stuff is only printed out once.
+
+        struct sigaction sig_int_act;
+
+        sig_int_act.sa_handler = sig_int;
+        sigemptyset(&sig_int_act.sa_mask);
+        sig_int_act.sa_flags = 0;
+
+        if (sigaction(SIGINT, &sig_int_act, NULL) < 0) {
+            err_sys("sigaction SIGINT error");
+        }
+
+        TELL_CHILD(pid); // To get past the first wait in the child.
+        for (;;) {
+            // Make the child write first yeah?
+            // If the parent writes first the child might not be waiting yet?
+            WAIT_CHILD();
+            printf("parent writing %d\n", counter);
+            fprintf(tmp, "p%d\n", counter);
+            fflush(tmp);
+            counter++;
+            sleep(1);
+            TELL_CHILD(pid);
+        }
+    }
+    return 0;
+}
+
+void sig_int(int arg) {
+    fseek(tmp, 0, SEEK_SET);
+    char c;
+    while ((c = getc(tmp)) != EOF) {
+        putchar(c);
+    }
+
+    struct sigaction dfl_act;
+
+    dfl_act.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_act.sa_mask);
+    dfl_act.sa_flags = 0;
+
+    // Reset SIGINT to its dfl_act action and resend it.
+    if (sigaction(SIGINT, &dfl_act, NULL) < 0) {
+        err_sys("sigaction SIGINT error");
+    }
+
+    kill(getpid(), SIGINT);
+
+}
+
+```
+
+## 10.7
+By resetting the disposition and then killing it with SIGABRT for real, the 
+termination status reflects that it was killed with SIGABRT. `_exit` wouldn't 
+do this. TODO Why can't we just call `_exit` with the SIGBART termination 
+status? The reason is that this isn't a cross platform way of doing it. On some 
+systems, the exit status from a signal is something like 127 + SIGNAL_CODE. In 
+the end writing something that duplicates what the shell does would not only be 
+flaky and potentially difficult to make cross platform, but would end up being 
+more code than just resetting the disposition and sending the signal again.
+
+This code snippet demonstrates different return codes (check with `echo $?`):
+
+```c
+#include <signal.h>
+#include <unistd.h>
+
+int main(int argc, char *argv[]) {
+    // Uncomment one of the two below to see the termination status of each.
+    //_exit(SIGABRT);
+    //kill(getpid(), SIGABRT);
+    return 0; // Shouldn't get here.
+}
+```
+
+## 10.8
+The effective user id will either be the owner of the receiving process or root,
+so it doesn't tell us much. The real user id is obviously then more informative.
+
+## 10.9
+```c
+#include "apue.h"
+#include <signal.h>
+#include <stdio.h>
+//-#include "error.c"
+
+int main(int argc, char *argv[]) {
+    sigset_t sigset;
+
+    if (sigprocmask(0, NULL, &sigset) < 0) {
+        err_sys("sigprocmask error");
+    }
+
+    for (int i = 0; i < NSIG; i++) {
+        if (sigismember(&sigset, i))
+            printf("%s ", sys_siglist[i]);
+    }
+    printf("\n");
+    return 0;
+}
+```
+
+This doesn't seem to work, but I think the mask is just unpopulated?
+
+## 10.10
+Time drifts after successive `sleep` calls. cron calls sleep every 60 seconds as
+well to schedule the next 60 seconds, but occasionally resyncs time with a 
+`sleep(59)`.
+
+## 10.11
+
+The `signal_intr` function is pretty much just a wrapper around the `sigaction` function.
+It creates a signal handler in which no signals are blocked. As such, it can be interrupted
+by any other incoming signal (except for the signal for said handler, i.e. the handler for SIGINT won't be interupted by another SIGINT). If the system defines it, the SA_INTERRUPT flag disables interrupts while the handler is running:
+
+> When set, this indicates a "fast" interrupt handler. Fast handlers are executed with interrupts disabled on the current processor. From [here.](http://www.makelinux.net/ldd3/chp-10-sect-2)
+
+The SA_INTERRUPT flag shouldn't be used unless you really need it. It's better to define an
+sa_mask which explicitly blocks flags you don't want the handler to deal with.
+
+This code enters the SIGALRM handler and just stays there. You then see that you can interrupt
+it with a SIGINT for example.
+
+Remember, the sa_mask part of the sigaction struct defines which signal are blocked. An
+empty mask means no signals are blocked.
+
+```c
+#include "apue.h"
+//-#include "signalintr.c"
+#include <unistd.h>
+
+void my_handler(int arg);
+
+int main(int argc, char *argv[]) {
+	signal_intr(SIGALRM, my_handler);
+	alarm(1);
+	sleep(3);
+	return 0;
+}
+
+void my_handler(int arg) {
+	int i = 0;
+	for(;;) {
+		printf("%d in signal handler %d\n", i++, arg);
+		sleep(1);
+		alarm(1); // This won't do anything.
+		if (i > 5) {
+			kill(getpid(), SIGINT); // This will.
+		}
+	}
+}
+```
+
+The function returns the old handler function.
+
+====================================
+
+```c
+// From fileio/mycat.c
+#include "apue.h"
+#include <signal.h>
+#include <sys/resource.h>
+//-#include "signalintr.c"
+//-#include "error.c"
+
+#define	BUFFSIZE	100
+
+void my_handler(int arg);
+
+int
+main(void)
+{
+	int		n;
+	int     written;
+	char	buf[BUFFSIZE];
+
+	struct rlimit my_limit;
+	my_limit.rlim_cur = 2048;
+	my_limit.rlim_max = 10000;
+	setrlimit(RLIMIT_FSIZE, &my_limit);
+
+	// SIGXFSZ File size limit exceeded (4.2BSD)
+	signal_intr(SIGXFSZ, my_handler);
+
+	while ((n = read(STDIN_FILENO, buf, BUFFSIZE)) > 0) {
+		if ((written = write(STDOUT_FILENO, buf, n)) != n) {
+		    fprintf(stderr, "Wrote %d bytes\n", written);
+			err_sys("write error");
+		}
+	}
+
+	if (n < 0)
+		err_sys("read error");
+
+	exit(0);
+}
+
+// arg is the signal value, e.g. 14 for SIGALRM.
+void my_handler(int arg) {
+	printf("Caught %d, %s\n", arg, strsignal(arg));
+}
+
+```
+
+Run `ulimit -f 1024` to set the RLIMIT_FSIZE resource limit. Note that you can't raise it again
+without superuser privileges. See [here](https://stackoverflow.com/questions/17483723/command-not-found-when-using-sudo-ulimit) if you have difficulties with that. Note that this value is the number of blocks, not the number of bytes. `setrlimit` is used in the program because it does it in bytes, which is much clearer.
+
+Now if you make yourself a random 2mb file and run the program:
+
+    dd if=/dev/zero of=2mbfile  bs=2M  count=1
+    cat 2mbfile | ./code/10.11.2 > test
+
+You'll get something like this:
+    
+    Wrote 76 bytes
+    write error: Success
+
+But why is it only 76 bytes instead of 1024? You'll also notice that if you do `ulimit -f 512` instead of getting something like:
+    
+    Wrote 38 bytes
+    write error: Success
+
+You get:
+    
+    Wrote 88 bytes
+    write error: Success
+ 
+This is because the "Wrote n bytes" text is reporting how many bytes the latest call to write
+successfully wrote. Remember that write fills up to the buffer only, so it takes multiple calls
+to write since we designated such a small buffer (100 bytes).
+
+Why 24? Because the buffer is 100 bytes. As such, the first 1000 bytes copy in 10 writes no
+worries, then the final copies only 24 bytes.
+
+## 10.12
+
+You will have to run this as superuser for the setrlimit to work.
+
+```c
+#include "apue.h"
+#include <stdio.h>
+#include <signal.h>
+#include <errno.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+//-#include "signalintr.c"
+
+// 1gb
+#define BUFSIZE 1000000000
+char buf[BUFSIZE];
+// You have to put this here (this is the data segment).
+// If you put it in main, it'll be on the stack. If you check
+// ulimit -a, you'll see that it is by default not large enough
+// for a buffer of 1gb.
+
+void my_handler(int arg);
+
+int main(int argc, char *argv[]) {
+
+	struct rlimit my_limit;
+	my_limit.rlim_cur = 1000000000;
+	my_limit.rlim_max = 1000000000;
+	if (setrlimit(RLIMIT_FSIZE, &my_limit) < 0) {
+		perror("setrlimit");
+		return -1;
+	}
+
+	signal_intr(SIGALRM, my_handler);
+
+	FILE *f = fopen("blah", "wb+");
+
+	alarm(2); // Make sure this is shorter than how long the fwrite takes
+
+	int written = fwrite(buf, 1, BUFSIZE, f);
+
+	if (ferror(f))
+		printf("ferror set, there was an error\n");
+	else
+		printf("ferror not set, disregard the errno below\n");
+	printf("Wrote %d bytes, errno = %d msg: %s\n", written, errno, strerror(errno));
+
+}
+
+void my_handler(int arg) {
+	printf("Caught %d: %s\n", arg, strsignal(arg));
+}
+```
+
+This displays pretty concering behaviour here. While we're busy writing our god awfully
+large 1gb file of junk, the OS blocks the signal from getting to the process until the
+`fwrite` completes. This is verified to be happening, it's not a race from the alarm firing
+before we get to the `fwrite` call.

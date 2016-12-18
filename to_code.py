@@ -15,9 +15,6 @@ how it seems like the exercises are organised in the book. Update: If there is
 more than one code snippet in an exercise, it will now number them like this:
 08.01, 08.01.2, 08.01.3, etc.
 
-Make sure to have a newline at the end of your target file (exercises.md).
-Otherwise, it might miss code that runs to the end of the file.
-
 This script can take "clean" in the args to remove all the compiled files.
 This script can take "compile" in the args to force compile all the files, even
 those that have no changes in their code.
@@ -33,7 +30,7 @@ marker_code = "```"
 marker_nocompile = "NO"
 
 source = "exercises.md"
-targetDir = "exercises"
+targetDir = "code"
 libDir = "../lib"
 
 clean = False
@@ -44,6 +41,8 @@ def main():
 
     with open(source, "r") as f:
         content = f.read().splitlines()
+
+    content.append("") # So you don't have to worry about the newline.
 
     currentExercise = "0.0"
     numSnippetsInExercise = 0
@@ -140,7 +139,7 @@ def writeCode(code, codeFName, compiledFName):
 
     # Compile the code.
     args = (libDir, codeFName, includes, compiledFName)
-    command = """gcc -g -I{} -D_GNU_SOURCE "{}" {} -o "{}" """.format(*args)
+    command = """gcc -std=c99 -g -I{} -D_GNU_SOURCE "{}" {} -o "{}" """.format(*args)
     print(command)
     os.system(command)
 
