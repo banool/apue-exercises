@@ -3,21 +3,33 @@
 # Tells me what page I should be up to by the end of the day.
 
 from datetime import date
-from sys import argv
+from sys import argv, exit
 from math import ceil
 
-startDate = date(2016, 11, 27)
-startPage = 90
+def printUsage():
+	print("USAGE: {} <schedule>".format(argv[0]))
+	print("  <schedule>: \"rev\" or \"orig\". \"rev\" is default.")
+	exit(1)
+
 endDate = date(2017, 1, 5)
-endPage = 844
 
 # I stopped for a few days and fell too far behind, so this
 # is a revised schedule which omits the last 2 chapters.
-if len(argv) > 1:
-    if argv[1] == "revised" or argv[1] == "rev":
-        startDate = date(2016, 12, 18)
-        startPage = 405
-        endPage = 742
+if len(argv) == 1:
+    argv.append("rev")
+if len(argv) not in (1,2):
+	printUsage()
+
+if argv[1] == "revised" or argv[1] == "rev":
+    startDate = date(2016, 12, 18)
+    startPage = 405
+    endPage = 742
+elif argv[1] == "original" or argv[1] == "orig":
+	startDate = date(2016, 11, 27)
+	startPage = 90
+	endPage = 844
+else:
+    printUsage()
 
 # We calculate the pageChunk now, instead of specifying it in advance.
 # It should still be 20 regardless of which of the dates/pages you choose.
