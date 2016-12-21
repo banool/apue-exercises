@@ -1385,8 +1385,11 @@ void my_handler(int arg) {
 
 ```
 
-Run `ulimit -f 1024` to set the RLIMIT_FSIZE resource limit. Note that you can't raise it again
-without superuser privileges. See [here](https://stackoverflow.com/questions/17483723/command-not-found-when-using-sudo-ulimit) if you have difficulties with that. Note that this value is the number of blocks, not the number of bytes. `setrlimit` is used in the program because it does it in bytes, which is much clearer.
+Run `ulimit -f 1024` to set the RLIMIT_FSIZE resource limit. Note that you can't 
+raise it again without superuser privileges. See [here](https://stackoverflow.com/questions/17483723/command-not-found-when-using-sudo-ulimit) 
+if you have difficulties with that. Note that this value is the number of 
+blocks, not the number of bytes. `setrlimit` is used in the program because 
+it does it in bytes, which is much clearer.
 
 Now if you make yourself a random 2mb file and run the program:
 
@@ -1398,7 +1401,8 @@ You'll get something like this:
     Wrote 76 bytes
     write error: Success
 
-But why is it only 76 bytes instead of 1024? You'll also notice that if you do `ulimit -f 512` instead of getting something like:
+But why is it only 76 bytes instead of 1024? You'll also notice that if you do 
+`ulimit -f 512` instead of getting something like:
     
     Wrote 38 bytes
     write error: Success
@@ -1408,9 +1412,10 @@ You get:
     Wrote 88 bytes
     write error: Success
  
-This is because the "Wrote n bytes" text is reporting how many bytes the latest call to write
-successfully wrote. Remember that write fills up to the buffer only, so it takes multiple calls
-to write since we designated such a small buffer (100 bytes).
+This is because the "Wrote n bytes" text is reporting how many bytes the latest 
+call to writesuccessfully wrote. Remember that write fills up to the buffer 
+only, so it takes multiple calls to write since we designated such a small 
+buffer (100 bytes).
 
 Why 24? Because the buffer is 100 bytes. As such, the first 1000 bytes copy in 10 writes no
 worries, then the final copies only 24 bytes.
@@ -1473,3 +1478,418 @@ This displays pretty concering behaviour here. While we're busy writing our god 
 large 1gb file of junk, the OS blocks the signal from getting to the process until the
 `fwrite` completes. This is verified to be happening, it's not a race from the alarm firing
 before we get to the `fwrite` call.
+
+# 11
+
+## 11.1
+The secret is to create the foo struct with malloc so the memory persists
+after the function exits (contrary to automatic variables, whose memory gets
+released when the function exits).
+
+```c
+#include "apue.h"
+#include <pthread.h>
+//-#include "error.c"
+
+struct foo {
+        int a, b, c, d;
+};
+
+void
+printfoo(const char *s, const struct foo *fp)
+{
+        printf("%s", s);
+        printf("  structure at 0x%lx\n", (unsigned long)fp);
+        printf("  foo.a = %d\n", fp->a);
+        printf("  foo.b = %d\n", fp->b);
+        printf("  foo.c = %d\n", fp->c);
+        printf("  foo.d = %d\n", fp->d);
+}
+
+void *
+thr_fn1(void *arg)
+{
+        struct foo *myfoo;
+        if ((myfoo = malloc(sizeof(struct foo))) == NULL)
+            err_sys("malloc error");
+        myfoo-> a = 1;
+        myfoo-> b = 2;
+        myfoo-> c = 3;
+        myfoo-> d = 4;
+        printfoo("thread 1:\n", myfoo);
+        pthread_exit((void *)myfoo);
+}
+
+void *
+thr_fn2(void *arg)
+{
+        printf("thread 2: ID is %lu\n", (unsigned long)pthread_self());
+        pthread_exit((void *)0);
+}
+
+int
+main(void)
+{
+        int                     err;
+        pthread_t       tid1, tid2;
+        struct foo      *fp;
+
+        err = pthread_create(&tid1, NULL, thr_fn1, NULL);
+        if (err != 0)
+                err_exit(err, "can't create thread 1");
+        err = pthread_join(tid1, (void *)&fp);
+        if (err != 0)
+                err_exit(err, "can't join with thread 1");
+        sleep(1);
+        printf("parent starting second thread\n");
+        err = pthread_create(&tid2, NULL, thr_fn2, NULL);
+        if (err != 0)
+                err_exit(err, "can't create thread 2");
+        sleep(1);
+        printfoo("parent:\n", fp);
+        exit(0);
+}
+```
+
+## 11.2
+Firstly, make sure you acquire a write lock on the queue.
+Secondly, note that there is a window between when a thread finds a job with
+`job_find` and when the job is removed with `job_remove`. In this window, the
+master thread could change the id of a job, which will cause problems (namely
+that the other thread will take the job still even though it no longer belongs
+to them). The way around this is to include a reference count inside the job
+struct. When a worker process finds a job with `job_find`, increment the count.
+This way, when the master thread goes to change the job id, if the count is
+greater than zero we know a worker is about to take it, so we can act
+accordingly (most likely just let them take the job).
+
+## 11.3
+```c NO
+#include <stdlib.h>
+#include <pthread.h>
+
+struct job {
+	struct job *j_next;
+	struct job *j_prev;
+	pthread_t   j_id;   /* tells which thread handles this job */
+	/* ... more stuff here ... */
+};
+
+struct queue {
+	struct job      *q_head;
+	struct job      *q_tail;
+	pthread_rwlock_t q_lock;
+};
+
+/*
+ * Initialize a queue.
+ */
+int
+queue_init(struct queue *qp)
+{
+	int err;
+
+	qp->q_head = NULL;
+	qp->q_tail = NULL;
+	err = pthread_rwlock_init(&qp->q_lock, NULL);
+	if (err != 0)
+		return(err);
+	/* ... continue initialization ... */
+	return(0);
+}
+
+/*
+ * Insert a job at the head of the queue.
+ */
+void
+job_insert(struct queue *qp, struct job *jp)
+{
+	pthread_rwlock_wrlock(&qp->q_lock);
+	jp->j_next = qp->q_head;
+	jp->j_prev = NULL;
+	if (qp->q_head != NULL)
+		qp->q_head->j_prev = jp;
+	else
+		qp->q_tail = jp;	/* list was empty */
+	qp->q_head = jp;
+	pthread_rwlock_unlock(&qp->q_lock);
+}
+
+/*
+ * Append a job on the tail of the queue.
+ */
+void
+job_append(struct queue *qp, struct job *jp)
+{
+	pthread_rwlock_wrlock(&qp->q_lock);
+	jp->j_next = NULL;
+	jp->j_prev = qp->q_tail;
+	if (qp->q_tail != NULL)
+		qp->q_tail->j_next = jp;
+	else
+		qp->q_head = jp;	/* list was empty */
+	qp->q_tail = jp;
+	pthread_rwlock_unlock(&qp->q_lock);
+}
+
+/*
+ * Remove the given job from a queue.
+ */
+void
+job_remove(struct queue *qp, struct job *jp)
+{
+	pthread_rwlock_wrlock(&qp->q_lock);
+	if (jp == qp->q_head) {
+		qp->q_head = jp->j_next;
+		if (qp->q_tail == jp)
+			qp->q_tail = NULL;
+		else
+			jp->j_next->j_prev = jp->j_prev;
+	} else if (jp == qp->q_tail) {
+		qp->q_tail = jp->j_prev;
+		jp->j_prev->j_next = jp->j_next;
+	} else {
+		jp->j_prev->j_next = jp->j_next;
+		jp->j_next->j_prev = jp->j_prev;
+	}
+	pthread_rwlock_unlock(&qp->q_lock);
+}
+
+/*
+ * Find a job for the given thread ID.
+ */
+struct job *
+job_find(struct queue *qp, pthread_t id)
+{
+	struct job *jp;
+
+	if (pthread_rwlock_rdlock(&qp->q_lock) != 0)
+		return(NULL);
+
+	for (jp = qp->q_head; jp != NULL; jp = jp->j_next)
+		if (pthread_equal(jp->j_id, id))
+			break;
+
+	pthread_rwlock_unlock(&qp->q_lock);
+	return(jp);
+}
+```
+
+STILL TODO
+
+## 11.4
+The first option is safer. It might result in some threads waiting for a bit
+while we wait for the first thread to hit step 4, but it means that a thread
+will grab it straight up when it's available without messing anything up.
+
+With the second option, in between steps 3 and 4 the condition can be altered
+by another thread, which means when the first thread calls step 4 the condition
+will no longer be valid. This means that the awakened threads must check the
+condition again to make sure that it is what we want (to be true).
+
+## 11.5
+TODO
+
+# 12
+
+## 12.1
+The output becomes fully buffered instead of line buffered. As such the lines 
+to be printed from the original parent before the `fork()` are still in the 
+buffers before the fork. A few tactically placed `fflush()`s would solve this, 
+but the easiest fix is to just set line buffering to line buffered with `setvbuf`.
+
+## 12.2
+See my question about this question on stack overflow [here](https://stackoverflow.com/questions/41257768/thread-safe-reentrant-async-signal-safe-putenv).
+
+```c
+#include <string.h>
+#include <errno.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <signal.h>
+
+// Prototypes
+int putenv_r(char *string);
+
+// Global vars / mutex stuff
+extern char **environ;
+pthread_mutex_t env_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int
+main(int argc, char *argv[]) {
+	
+	int ret = putenv_r("key1=myvalue friend");
+	printf("%d: mykey = %s\n", ret, getenv("key1"));
+
+	ret = putenv_r("key2=myvalue dog");
+	ret = putenv_r("key3=myvalue dog");
+	ret = putenv_r("key4=myvalue dog");
+	ret = putenv_r("key5=myvalue dog");
+	ret = putenv_r("key6=myvalue dog");
+	ret = putenv_r("key7=myvalue dog");
+	ret = putenv_r("key8=myvalue dogs");
+	printf("%d: mykey = %s\n", ret, getenv("key8"));
+
+	return 0;
+}
+
+
+int
+putenv_r(char *string)
+{
+    int len;
+	int key_len = 0;
+	int i;
+
+	sigset_t block;
+	sigset_t old;
+
+	sigfillset(&block);
+	pthread_sigmask(SIG_BLOCK, &block, &old);
+
+	// This function is thread-safe
+	len = strlen(string);
+
+	// Like glibc 2.1.2 and onwards we don't make a copy of the string.
+	// The below behaviour, making a copy, is what older glibcs did.
+	/*
+	char pair[BUFSIZE];
+	strncpy(pair, string, len);
+	pair[len] = 0;
+	*/
+
+	for (int i=0; i < len; i++) {
+		if (string[i] == '=') {
+			key_len = i;
+			break;
+		}
+	}
+	
+	// Need a string like key=value
+	if (key_len == 0) {
+		errno = EINVAL; // putenv doesn't normally return this err code
+		return -1;
+	}
+
+	// We're moving into environ territory so start locking stuff up.
+	pthread_mutex_lock(&env_mutex);
+
+	for (i = 0; environ[i] != NULL; i++) {
+		if (strncmp(string, environ[i], key_len) == 0) {
+			// Pointer assignment, so if string changes so does the env.
+			environ[i] = string;
+			pthread_mutex_unlock(&env_mutex);
+			return(0);
+		}
+	}
+
+	int n = sizeof(environ)/sizeof(environ[0]);
+	printf("%d   %s\n", n, environ[i-1]);
+
+	// If we get here, the env var didn't already exist, so we add it.
+	// Note that malloc isn't async-signal safe. This is why we block signals.
+	environ[i] = malloc(sizeof(char *));
+	environ[i] = string;
+	environ[i+1] = NULL;
+	// This ^ is possibly incorrect, do I need to grow environ somehow?
+
+	pthread_mutex_unlock(&env_mutex);
+	pthread_sigmask(SIG_SETMASK, &old, NULL);
+
+	return(0);
+}
+
+```
+
+## 12.3
+Just whacking an all-signal block at the start of your function and then 
+removing it at the end doesn't guarantee that it is signal safe. The reason 
+for this is some of the functions in between the block/unblock might unblock 
+the signals themselves, making the code vulnerable.
+
+## 12.4
+TODO
+
+## 12.5
+If we want to fork-exec mainly, meaning that there is a totally different 
+program, instead of tasks connected by a common thread (excuse the pun).
+
+## 12.6
+Signals don't play too nice with threads. Unless it's a signal that a thread
+caused to be generated, in which case the signal will generally be delivered
+to that thread, the signal will be sent to any random thread. Point being,
+don't rely on signals in a multi-threaded environment like you would in a 
+single-threaded environment.
+
+Original code in figure 10.29 to change. Go see the answer, the code is totally
+different. You can use `select`, which is thread safe, to implement this.
+Beyond that there are no special tricks.
+
+```c NO
+#include "apue.h"
+#include <signal.h>
+#include <unistd.h>
+
+static void
+sig_alrm(int signo)
+{
+	/* nothing to do, just return to wake up the pause */
+}
+
+unsigned int
+sleep(unsigned int seconds)
+{
+	struct sigaction newact, oldact;
+	sigset_t         newmask, oldmask, suspmask;
+	unsigned int     unslept;
+
+	newact.sa_handler = sig_alrm;
+	sigemptyset(&newact.sa_mask);
+	newact.sa_flags = 0;
+	sigaction(SIGALRM, &newact, &oldact);
+
+	sigemptyset(&newmask);
+	sigaddset(&newmask, SIGALRM);
+	sigprocmask(SIG_BLOCK, &newmask, &oldmask);
+
+	alarm(seconds);		/* start the timer */
+	suspmask = oldmask;
+
+	// Make sure SIGALRM isn't blocked.
+	sigdelset(&suspmask, SIGALRM);
+
+	// Wait for signal to be caught.
+	sigsuspend(&suspmask);
+	// Some signal has been cuaght, SIGALRM is now blocked.
+
+	unslept = alarm(0);
+
+	// Reset previous action
+	sigaction(SIGALRM, &oldact, NULL);
+
+	// Reset signal mask, which unlocks SIGALRM.
+	sigprocmask(SIG_SETMASK, &oldmask, NULL);
+
+	return(unslept);
+}
+```
+
+## 12.7
+We should be able to yeah, since after a fork the two processes have their own
+memory spaces (technically not because of copy-on-write, but as far for all
+intents and purposes we can consider them separate).
+
+WRONG! The question wasn't clear about this but it is referring to atfork
+handlers, in which case they're aren't entirely disjoint yet. Really, after a
+`fork` be incredibly careful with everything you do before calling `exec`.
+
+## 12.8
+The calculating of times is super dirty. The `timeout` function takes an
+absolute time, but we convert it into a relative amount of time left until
+that absolute time. Instead, we could make the timeout function just take a 
+relative time in the first place. Alternatively, we could set the flag in the
+clock_nanosleep function from `0` to `TIMER_ABSTIME`, meaning it takes an
+absolute time, which would also save us the conversion. The latter of these
+options would probably be the simplest, but it's up to preference. Either are
+better than what the code does currently (absolute -> relative).
