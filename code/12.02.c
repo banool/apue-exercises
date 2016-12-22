@@ -88,8 +88,7 @@ putenv_r(char *string)
 	environ[i] = malloc(sizeof(char *));
 	environ[i] = string;
 	environ[i+1] = NULL;
-	//environ = new_environ; // Note that this assignment might not be atomic.
-	// Thanks to Andrew for suggesting this ^ big improvement.
+	// This ^ is possibly incorrect, do I need to grow environ somehow?
 
 	pthread_mutex_unlock(&env_mutex);
 	pthread_sigmask(SIG_SETMASK, &old, NULL);

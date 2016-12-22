@@ -10,7 +10,8 @@ The word **TODO** is used to denote things I haven't done yet or wasn't sure abo
 
 To include a file in the lib dir (e.g. error.c) do this:
 //-#include "error.c"
-Dirty I know but the alternative is to try and copy the makefiles that the original code was using.
+Dirty I know but the alternative is to try and copy the makefiles that the 
+original code was using.
 
 #  3 File I/O
 ## 3.1
@@ -170,7 +171,7 @@ int main() {
 }
 ```
 
-# 4 File directories
+#  4 File directories
 ## 4.1
 ```c
 #include "apue.h"
@@ -372,7 +373,7 @@ This program will eventually throw a segmentation fault (when we surpass pathmax
 ## 4.17
 You can't just unlink something in /dev as a regular user, write permissions are turned off in there. TODO looking at /dev in macOS, it looks like lots of files have write permissions enabled, including /dev/fd/0 (and 1 and 2, but not the stdin/stdout/stderr symlinks?). You should check out how this behaves on linux.
 
-# 5
+#  5 Standard I/O Library
 
 ## 5.1
 ```c
@@ -465,7 +466,7 @@ See page 181. Have a good think about this and you'll see why set-uid is secure.
 
 The login and passwd programs are set-uid programs, and their owner is root. This means that a user running these programs will have root permissions, but only through that program. This means that, even though the process has root permissions, the user can only do whatever functionality the program has defined. A user can't make a root set-uid program themselves without root permissions. However this means that if there are any vulnerabilities in a root set-uid program, then the whole system is at risk.
 
-# 6
+#  6 System Data Files and Information
 ## 6.1
 Depends on the implementation. On Mac OS X you can't get to the encrypted password (the regular password file is shadowed automatically). On Linux there are a bunch of functions which can access the shadow password but you need superuser privileges to use them. The shadow password files aren't accessible by the world.
 
@@ -585,7 +586,7 @@ int main(int charc, char *argv[]) {
 }
 ```
 
-# 7
+#  7 Process Environment
 ## 7.1
 13 is the length of hello, world + the null byte. Because the function doesn't `return` or `exit`, the program exits with the return value of the printf. This is certainly not something you should rely upon, and under ISO C (if the extensions are on) the return value will always be 0. Under macOS Sierra it returns 0.
 
@@ -670,7 +671,7 @@ int f1(int val) {
 
 TODO i'm not sure if my above conclusion is correct, and this program works, I probably need to scramble the memory around a bit first before it works. Definitely TODO.
 
-# 8
+#  8 Process Control
 TODO process accounting, I didn't really do that properly.
 
 ## 8.1
@@ -935,7 +936,7 @@ int main(int charc, char *argv[]) {
 
 As expected, the flag is set when using the stdlib and not when using system calls.
 
-# 9
+#  9 Process Relationships
 
 ## 9.1
 
@@ -994,7 +995,7 @@ int main(int argc, char *argv[]) {
 }
 ```
 
-# 10
+#  10 Signals
 
 ## 10.1
 ```c
@@ -1479,7 +1480,7 @@ large 1gb file of junk, the OS blocks the signal from getting to the process unt
 `fwrite` completes. This is verified to be happening, it's not a race from the alarm firing
 before we get to the `fwrite` call.
 
-# 11
+#  11 Threads
 
 ## 11.1
 The secret is to create the foo struct with malloc so the memory persists
@@ -1690,7 +1691,7 @@ condition again to make sure that it is what we want (to be true).
 ## 11.5
 TODO
 
-# 12
+#  12 Thread Control
 
 ## 12.1
 The output becomes fully buffered instead of line buffered. As such the lines 
@@ -1893,3 +1894,90 @@ clock_nanosleep function from `0` to `TIMER_ABSTIME`, meaning it takes an
 absolute time, which would also save us the conversion. The latter of these
 options would probably be the simplest, but it's up to preference. Either are
 better than what the code does currently (absolute -> relative).
+
+#  13 Daemon Processes
+## 13.1
+Go read the manpage for `chroot`, it doesn't work quite how you think. Remember
+that this is not changing the current working directory, but changing the root,
+as the name of the function implies. As such, if I for example `chroot`ed to
+`/home/daniel`, if I then opened `/`, that `/` refers to `/home/daniel`. Go
+read the manpage though, there are a few quirks to how it works that you should
+know about.
+
+Unless the program is chrooting to the actual original root `/`, then you won't
+be able to access `/dev/log`, because the daemon will no longer have access
+to the true absolute root of the file system. The secret is to call `openlog`
+with the LOG_NDELAY option set before calling `chroot`. Even after the call to
+`chroot`, the file descriptor to the log socket will still be valid.
+
+## 13.2
+I have a Unix & Linux stack exchange question about this here:
+https://unix.stackexchange.com/questions/332085/rsyslogd-session-leader
+
+## 13.3
+
+- **systemd**:		"A great kernel to run alongside Linux".
+					Controversially replaces init, is heavy and far reaching.
+- **kthreadd**: 	Used by the kernel to spawn more kernel space threads.
+- **ksoftirqd**:	One of these daemons exists for each cpu-core. You'll see
+					on this system that there are 8 of these, up to 
+					ksoftirqd/7 (from ksoftirqd/0). This is because this cpu,
+					the 6700k, has 8 virtual cpus (4 cores, 2 threads each).
+					The process handles soft interrupts.
+- **watchdog**:		See [here.](https://linux.die.net/man/8/watchdog)
+- **migration**:	Distributes workload accross cpu cores. There should be
+					one per core, like ksoftirqd.
+- **rcu_sched**:	Also **rcu_bh**. See [here](https://lwn.net/Articles/262464/).
+- **bioset**:		These are to do with block IO. See [here.](https://askubuntu.com/questions/673466/bioset-process-what-is-its-function/687660)
+
+There are no doubt way more of these, such as to do with networking.
+
+I'm not sure if `kworker` is really a daemon per se, considering that they are
+spawned just to do work for the kernel rather than living for the whole system
+up-time, but [here](https://askubuntu.com/questions/33640/kworker-what-is-it-and-why-is-it-hogging-so-much-cpu)) 
+is info on them regardless.
+
+## 13.4
+```c
+#include "apue.h"
+#include <unistd.h>
+#include <fcntl.h>
+
+//-#include "daemonize.c"
+//-#include "error.c"
+
+#define OUTFILE "/home/daniel/myout.txt"
+#define BUFSIZE 32
+
+int main(int argc, char *argv[]) {
+	int fd;
+	char lname[BUFSIZE];
+
+	daemonize(argv[0]);
+
+	if ((fd = open(OUTFILE, O_CREAT|O_TRUNC|O_WRONLY, S_IRUSR|S_IWUSR|S_IRGRP)) < 0) {
+		perror("open error");
+		return -1;
+	}
+
+	if (getlogin_r(lname, BUFSIZE) != 0) {
+		perror("getlogin error");
+		return -1;		
+	}
+
+	if (write(fd, lname, strlen(lname)) < 0) {
+		perror("write error");
+		return -1;			
+	}
+
+	return 0;
+}
+```
+
+For some reason I couldn't get this function to work when using the stdio lib.
+This is probably something worth looking into TODO.
+
+Note that these `perrors` are essentially useless because stderr is closed.
+It would be better to use the syslog function, since it has been daemonized
+and all, especially considering that the `daemonize` function set it up for us
+with the call to `openlog`.
