@@ -139,7 +139,7 @@ def writeCode(code, codeFName, compiledFName):
 
     # Compile the code.
     args = (libDir, codeFName, includes, compiledFName)
-    command = """gcc -Wall -pthread -std=c99 -g -I{} -D_GNU_SOURCE "{}" {} -o "{}" """.format(*args)
+    command = """gcc -Wall -pthread -std=c99 -g -I{} -D_GNU_SOURCE "{}" {} -o "{}" -lrt""".format(*args)
     print(command)
     os.system(command)
 

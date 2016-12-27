@@ -1981,3 +1981,436 @@ Note that these `perrors` are essentially useless because stderr is closed.
 It would be better to use the syslog function, since it has been daemonized
 and all, especially considering that the `daemonize` function set it up for us
 with the call to `openlog`.
+
+#  14 Advanced I/O
+## 14.1
+Need 3 processes. One process read locks, the second read locks, the first drops it, then reaquires it, then the second drops then reaquires, etc. Then third meanwhile tries to get a write lock.
+
+An easier way to test this is if a read lock is held, then a write lock waits for the lock, if you can queue another read lock while the write lock is waiting then you'll have the problematic behaviour of never being able to acquire a write lock.
+
+```c NO
+TODO
+```
+
+## 14.2
+See the answer and read the manpages, nothing too special.
+
+## 14.3
+It's complicated. See the answer, you need to do a bunch of stuff with `#define`s and symbols, as well as system configuration.
+
+## 14.4
+TODO
+
+## 14.5
+```c
+#include <stdio.h>
+#include <sys/select.h>
+
+int sleep_us(int ms);
+
+int main(int argc, char *argv[]) {
+    printf("Waiting 2 seconds\n");
+    sleep_us(2000000);
+    return 0;
+}
+
+int sleep_us(int ms) {
+    struct timeval tv;
+    // This is better than just putting all the ms in tv_usec.
+    tv.tv_sec  = ms / 1000000;
+    tv.tv_usec = ms % 1000000;
+    // Will return 0 on success since all the sets are NULL.
+    return select(0, NULL, NULL, NULL, &tv);
+}
+```
+
+## 14.6
+You would think yes, because advisory should work if you write your program to respect the locks, but unfortunately it doesn't work because locks are lost accross a fork. This means that a child can't start with any locks of its own, making it hard for a parent to wait for the child.
+
+## 14.7
+```c
+#include "apue.h"
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <stdio.h>
+#include <fcntl.h>
+//-#include "setfl.c"
+//-#include "error.c"
+
+int main(int argc, char *argv[]) {
+    int fds[2];
+
+    if (pipe(fds) < 0) {
+        perror("pipe error");
+        return -1;
+    }
+
+    set_fl(fds[1], O_NONBLOCK);
+
+    int ret;
+    int counter = 0;
+    while ((ret = write(fds[1], "writing data friend", 19)) > 0) {
+        counter += ret;
+        // This fun little escape makes it reprint on the same line.
+        printf("\033[A\33[2K\r%5d bytes written\n", counter);
+    }
+
+    printf("write failed with error %d: %s\n", errno, strerror(errno));
+    return 0;
+}
+```
+
+On my current system this gets to 65531 bytes (so 65536).
+
+PIPE_BUF is only 4096 bytes on my system. The 65536 value is the maxmimum amount of data allowed in the pipe, while the 4096 value is the maximum amount of data that can be written atomically (in one go).
+
+## 14.8
+You need to compile with the `-lrt` gcc flag for the aio functions.
+
+```c
+#include "apue.h"
+#include <ctype.h>
+#include <fcntl.h>
+#include <aio.h>
+#include <errno.h>
+//-#include "setfl.c"
+//-#include "error.c"
+
+#define BSZ 4096
+#define NBUF 8
+
+enum rwop {
+    UNUSED = 0,
+    READ_PENDING = 1,
+    WRITE_PENDING = 2
+};
+
+struct buf {
+    enum rwop     op;
+    int           last;
+    struct aiocb  aiocb;
+    unsigned char data[BSZ];
+};
+
+struct buf bufs[NBUF];
+
+unsigned char
+translate(unsigned char c)
+{
+    /* same as before */
+    if (isalpha(c)) {
+        if (c >= 'n')
+            c -= 13;
+        else if (c >= 'a')
+            c += 13;
+        else if (c >= 'N')
+            c -= 13;
+        else
+            c += 13;
+    }
+    return(c);
+}
+
+int
+main(int argc, char* argv[])
+{
+    int                     ifd, ofd, i, j, n, err, numop;
+    struct stat             sbuf;
+    const struct aiocb      *aiolist[NBUF];
+    off_t                   off = 0;
+    // Set this to 1 if connected to a pipe or terminal.
+    int                     is_pipe_or_tty = 0;
+
+    if (argc != 1)
+        err_quit("usage: %s", argv[0]);
+    // These are the important lines.
+    ifd = STDIN_FILENO;
+    ofd = STDOUT_FILENO;
+    if (fstat(ifd, &sbuf) < 0)
+        err_sys("fstat failed");
+
+    // Pipe or something like that, they don't have a size.
+    if (sbuf.st_size == 0) {
+        is_pipe_or_tty = 1; 
+    }
+
+    // Don't think this is necessary / does anything.
+    //set_fl(STDIN_FILENO, O_ASYNC);
+    //set_fl(STDOUT_FILENO, O_ASYNC);
+
+    /* initialize the buffers */
+    for (i = 0; i < NBUF; i++) {
+        bufs[i].op = UNUSED;
+        bufs[i].aiocb.aio_buf = bufs[i].data;
+        bufs[i].aiocb.aio_sigevent.sigev_notify = SIGEV_NONE;
+        aiolist[i] = NULL;
+    }
+
+    numop = 0;
+    for (;;) {
+        for (i = 0; i < NBUF; i++) {
+            switch (bufs[i].op) {
+            case UNUSED:
+                /*
+                 * Read from the input file if more data
+                 * remains unread.
+                 */
+                if (off < sbuf.st_size || is_pipe_or_tty) {
+                    bufs[i].op = READ_PENDING;
+                    bufs[i].aiocb.aio_fildes = ifd;
+                    bufs[i].aiocb.aio_offset = off;
+                    off += BSZ;
+                    // TODO how does this work with a pipe...
+                    if (off >= sbuf.st_size) {
+                        bufs[i].last = 1;
+                        is_pipe_or_tty = 0; // THIS
+                    }
+                    bufs[i].aiocb.aio_nbytes = BSZ;
+                    if (aio_read(&bufs[i].aiocb) < 0)
+                        err_sys("aio_read failed");
+                    aiolist[i] = &bufs[i].aiocb;
+                    numop++;
+                }
+                break;
+
+            case READ_PENDING:
+                if ((err = aio_error(&bufs[i].aiocb)) == EINPROGRESS)
+                    continue;
+                if (err != 0) {
+                    if (err == -1)
+                        err_sys("aio_error failed");
+                    else
+                        err_exit(err, "read failed");
+                }
+
+                /*
+                 * A read is complete; translate the buffer
+                 * and write it.
+                 */
+                if ((n = aio_return(&bufs[i].aiocb)) < 0)
+                    err_sys("aio_return failed");
+                if (n != BSZ && !bufs[i].last)
+                    err_quit("short read (%d/%d)", n, BSZ);
+                for (j = 0; j < n; j++)
+                    bufs[i].data[j] = translate(bufs[i].data[j]);
+                bufs[i].op = WRITE_PENDING;
+                bufs[i].aiocb.aio_fildes = ofd;
+                bufs[i].aiocb.aio_nbytes = n;
+                if (aio_write(&bufs[i].aiocb) < 0)
+                    err_sys("aio_write failed");
+                /* retain our spot in aiolist */
+                break;
+
+            case WRITE_PENDING:
+                if ((err = aio_error(&bufs[i].aiocb)) == EINPROGRESS)
+                    continue;
+                if (err != 0) {
+                    if (err == -1)
+                        err_sys("aio_error failed");
+                    else
+                        err_exit(err, "write failed");
+                }
+
+                /*
+                 * A write is complete; mark the buffer as unused.
+                 */
+                if ((n = aio_return(&bufs[i].aiocb)) < 0)
+                    err_sys("aio_return failed");
+                if (n != bufs[i].aiocb.aio_nbytes)
+                    err_quit("short write (%d/%d)", n, BSZ);
+                aiolist[i] = NULL;
+                bufs[i].op = UNUSED;
+                numop--;
+                break;
+            }
+        }
+        if (numop == 0) {
+            if (off >= sbuf.st_size)
+                break;
+        } else {
+            if (aio_suspend(aiolist, NBUF, NULL) < 0)
+                err_sys("aio_suspend failed");
+        }
+    }
+
+    bufs[0].aiocb.aio_fildes = ofd;
+    if (aio_fsync(O_SYNC, &bufs[0].aiocb) < 0)
+        err_sys("aio_fsync failed");
+    exit(0);
+}
+```
+
+I'm not sure if the above actually solves the problem. To really see what I'm
+talking about, try this:
+
+    echo hello | ./code/14.08 | ./code/14.08
+
+You'll see that it gets converted by ROT13 and then converted again back to normal,
+but after it's done it, it just lingers without actually terminating. Even with
+just a single command like:
+    
+    echo hello | ./code/14.08
+
+It takes quite a while for the program to die. Perhaps I should be dealing with an
+EOF or something? Because redirecting from a file outputs it and stop instantly.
+
+**Update**: Go to the point in the code marked **THIS**. After we hit the final read,
+I set `is_pipe_or_tty` to `0`. Because we can't check against the size of the file,
+we use this condition to tell the program to stop trying to read more, much as we 
+used it to indicate that we should readnj in the first place.
+
+## 14.9
+```c
+#include <time.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <string.h>
+#include <stdio.h>
+#include <sys/uio.h>
+
+#define START_BYTES 25
+#define END_BYTES 3000000
+
+void timespec_diff(struct timespec *start, struct timespec *stop,
+         struct timespec *result);
+
+int main(int argc, char *argv[]) {
+    struct timespec start, end, result;
+
+    int fd = open("testbois", O_CREAT|O_TRUNC|O_WRONLY, 0777);
+    int fdrand = open("/dev/random", O_RDONLY);
+
+    for (int b = START_BYTES; b <= END_BYTES; b *= 2) {
+        char buf1[b];
+        char buf2[b];
+
+        // This shouldn't really do anything.
+        read(fdrand, buf1, b);
+        read(fdrand, buf2, b);
+
+        // Manual copy and write.
+        clock_gettime(CLOCK_REALTIME, &start);
+
+        char buf3[b*2];
+        memcpy(buf3, buf1, b);
+        memcpy(buf3+b, buf2+b, b);
+
+        write(fd, buf3, b*2);
+
+        clock_gettime(CLOCK_REALTIME, &end);
+        timespec_diff(&start, &end, &result);
+        printf("%7d copy and write: %lld.%.9ld", b, (long long)result.tv_sec, result.tv_nsec);
+
+        ftruncate(fd, 0);
+
+        // Using writev.
+        read(fdrand, buf1, b);
+        read(fdrand, buf2, b);
+
+        clock_gettime(CLOCK_REALTIME, &start);
+
+        struct iovec bufs[2];
+        bufs[1].iov_base = buf1;
+        bufs[1].iov_len  = b;
+        bufs[2].iov_base = buf2;
+        bufs[2].iov_len  = b;
+
+        writev(fd, bufs, 2);
+
+        clock_gettime(CLOCK_REALTIME, &end);
+        timespec_diff(&start, &end, &result);
+        printf(" writev: %lld.%.9ld\n", (long long)result.tv_sec, result.tv_nsec);
+
+        ftruncate(fd, 0);
+    }
+    return 0;
+}
+
+// Thanks: https://gist.github.com/diabloneo/9619917
+void timespec_diff(struct timespec *start, struct timespec *stop,
+         struct timespec *result)
+{
+    if ((stop->tv_nsec - start->tv_nsec) < 0) {
+        result->tv_sec = stop->tv_sec - start->tv_sec - 1;
+        result->tv_nsec = stop->tv_nsec - start->tv_nsec + 1000000000;
+    } else {
+        result->tv_sec = stop->tv_sec - start->tv_sec;
+        result->tv_nsec = stop->tv_nsec - start->tv_nsec;
+    }
+}
+```
+
+The results from this seem counter intuitive, copy and write should be faster at
+the start and then slower later. TODO what's up with this?
+
+## 14.10
+The program in question is `../advio/mcopy2`. It doesn't look like the access
+time is updated under WSL. According to the book all four platforms update the
+last access time under at least the default file system (indeed perhaps why WSL
+doesn't update it, since it's Linux but the files are on a NTFS drive).
+
+## 14.11
+```c
+#include "apue.h"
+#include <fcntl.h>
+#include <sys/mman.h>
+//-#include "error.c"
+
+#define COPYINCR (1024*1024*1024)       /* 1 GB */
+
+int
+main(int argc, char *argv[])
+{
+    int             fdin, fdout;
+    void            *src, *dst;
+    size_t          copysz;
+    struct stat     sbuf;
+    off_t           fsz = 0;
+
+    if (argc != 3)
+        err_quit("usage: %s <fromfile> <tofile>", argv[0]);
+
+    if ((fdin = open(argv[1], O_RDONLY)) < 0)
+        err_sys("can't open %s for reading", argv[1]);
+
+    if ((fdout = open(argv[2], O_RDWR | O_CREAT | O_TRUNC,
+            FILE_MODE)) < 0)
+        err_sys("can't creat %s for writing", argv[2]);
+
+    if (fstat(fdin, &sbuf) < 0)   /* need size of input file */
+        err_sys("fstat error");
+
+    if (ftruncate(fdout, sbuf.st_size) < 0) /* set output file size */
+        err_sys("ftruncate error");
+
+    while (fsz < sbuf.st_size) {
+        if ((sbuf.st_size - fsz) > COPYINCR)
+            copysz = COPYINCR;
+        else
+            copysz = sbuf.st_size - fsz;
+
+        if ((src = mmap(0, copysz, PROT_READ, MAP_SHARED,
+            fdin, fsz)) == MAP_FAILED)
+                err_sys("mmap error for input");
+        
+        // Closing input file as per the question.
+        if (close(fdin) < 0)
+            err_sys("couldn't close fdin");
+
+        if ((dst = mmap(0, copysz, PROT_READ | PROT_WRITE,
+            MAP_SHARED, fdout, fsz)) == MAP_FAILED)
+                err_sys("mmap error for output");
+
+        memcpy(dst, src, copysz);       /* does the file copy */
+        munmap(src, copysz);
+        munmap(dst, copysz);
+        fsz += copysz;
+    }
+    exit(0);
+}
+```
+
+If you use this (just like you would use mcopy2), you'll see that it still works.
