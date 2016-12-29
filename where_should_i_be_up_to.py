@@ -10,7 +10,7 @@ from math import ceil
 def printUsage():
 	print("USAGE: {} <schedule or offset>".format(argv[0]))
 	print("  <schedule>: \"rev\" or \"orig\". \"rev\" is default.")
-	print("  <offset>:   +n or -n. n must be an integer")
+	print("  <offset>:   +n or -n. n must be an integer number of pages.")
 	exit(1)
 
 def getOffset(arg1):

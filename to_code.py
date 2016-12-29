@@ -103,13 +103,17 @@ def main():
         # except for when we're in code, in which case we store it.
 
 def writeCode(code, codeFName, compiledFName):
+    spacing = "  "
+    compiledFnameEnd = compiledFName.split("/")[-1]
+    if compiledFnameEnd.count(".") > 1:
+        spacing = "" 
     # Check if the code already exists and if anything is different.
     # If it does and nothing has changed, no need to rewrite/recompile.
     if existsUnchanged(code, codeFName) and not forceCompile:
-        print("{} unchanged".format(compiledFName.split("/")[-1]))
+        print("{} {}unchanged".format(compiledFnameEnd, spacing))
         return
     else:
-        print("{} changed".format(compiledFName.split("/")[-1]))
+        print("{} {}changed".format(compiledFnameEnd, spacing))
 
     # Otherwise we write anew and compile.
     with open(codeFName, "w") as f:

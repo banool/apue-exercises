@@ -2414,3 +2414,335 @@ main(int argc, char *argv[])
 ```
 
 If you use this (just like you would use mcopy2), you'll see that it still works.
+
+#  15
+## 15.1
+Firstly do this: `export PAGER=/bin/less`. If you run the program (pipe2.c) without
+modifying it, you'll see that you get (END) at the bottom indicating that the pager
+received an end of file (EOF) from the pipe. However if you don't close the write end
+of the pipe, the reader (the pager) will never get the EOF and just block. The take
+away is that closing the write end of a pipe sends the EOF.
+
+## 15.2
+Because the parent doesn't wait for its child it just terminates. When it does so, 
+it closes both ends of the pipe, including the read end of the child. If the child
+hasn't read the data yet, it won't be able to so nothing will happen. If you for
+example throw a `sleep(2)` in before the commented-out `waitpid`, it should work
+(unless under heavy load) because the child gets a chance to read from the pipe.
+Obviously the `waitpid` is the optimal way to do it so the parent waits as long as
+it needs to for the child to do it's thing.
+
+## 15.3
+```c
+#include <stdio.h>
+
+int main(int argc, char *argv[]) {
+    FILE *fp = popen("mynonsensecommand", "r");
+    if (fp == NULL) {
+        printf("popen returned a null pointer\n");
+    } else {
+        printf("popen returned a non-null pointer\n");
+    }
+    return 0;
+}
+```
+
+From this you'll see that the `FILE` pointer isn't NULL because the shell is executed,
+which becomes the `FILE` pointer. However the shell then prints:
+
+> sh: 1: mynonsensecommand: not found
+
+You'll also find that from calling `pclose` you get a code like 127 from the shell.
+
+## 15.4
+pipe4.c is the driver, add2.c is the program being run. TODO I'm not really sure
+what this question/answer is getting at, and running the program without the signal
+doesn't change the termination status. If run like `/pipe4` it returns 130 (check
+using `echo $?`), or if you do `echo 1 2 | ./pipe4` it return 0.
+
+## 15.5
+```c
+#include "apue.h"
+//-#include "error.c"
+
+static void sig_pipe(int);      /* our signal handler */
+
+int
+main(void)
+{
+    int     n, fd1[2], fd2[2];
+    FILE    *f_in, *f_out;
+    pid_t   pid;
+    char    line[MAXLINE];
+
+    if (signal(SIGPIPE, sig_pipe) == SIG_ERR)
+        err_sys("signal error");
+
+    if (pipe(fd1) < 0 || pipe(fd2) < 0)
+        err_sys("pipe error");
+
+    if ((pid = fork()) < 0) {
+        err_sys("fork error");
+    } else if (pid > 0) {                           /* parent */
+        close(fd1[0]);
+        close(fd2[1]);
+        f_in  = fdopen(fd2[0], "r"); // error checking, who needs it?
+        f_out = fdopen(fd1[1], "w");
+        // NULL means let it do the buffer allocating. Line buffering of course.
+        setvbuf(f_in, NULL, _IOLBF, 0);
+        setvbuf(f_out, NULL, _IOLBF, 0);
+
+        while (fgets(line, MAXLINE, stdin) != NULL) {
+            n = strlen(line);
+            if (fputs(line, f_out) == EOF)
+                err_sys("fputs error to pipe");
+            if (fgets(line, MAXLINE, f_in) == NULL) {
+                err_msg("child closed pipe");
+                break;
+            }
+            line[n] = 0;    /* null terminate */
+            if (fputs(line, stdout) == EOF)
+                err_sys("fputs error");
+        }
+
+        if (ferror(stdin))
+            err_sys("fgets error on stdin");
+        exit(0);
+    } else {                                    /* child */
+        close(fd1[1]);
+        close(fd2[0]);
+        if (fd1[0] != STDIN_FILENO) {
+            if (dup2(fd1[0], STDIN_FILENO) != STDIN_FILENO)
+                err_sys("dup2 error to stdin");
+            close(fd1[0]);
+        }
+
+        if (fd2[1] != STDOUT_FILENO) {
+            if (dup2(fd2[1], STDOUT_FILENO) != STDOUT_FILENO)
+                err_sys("dup2 error to stdout");
+            close(fd2[1]);
+        }
+        // add2.c will be in ./other or ../other depending
+        // If you wanted to get fancy you could try something here:
+        // https://stackoverflow.com/questions/4025370/can-an-executable-discover-its-own-path-linux
+        if (execl("./other/add2", "add2", (char *)0) < 0)
+            err_sys("execl error");
+    }
+    exit(0);
+}
+
+static void
+sig_pipe(int signo)
+{
+    printf("SIGPIPE caught\n");
+    exit(1);
+}
+```
+
+## 15.6
+Both `system` and `popen` use a wait/waitpid in their implementations.
+
+1. `popen` runs `/bin/true` which returns pretty much instantly.
+2. `system` calls `sleep `100`. It then calls `wait`, waiting for its child
+   (`sleep 100`) to exit.
+3. `/bin/true` will almost certainly exit before `sleep 100`. The `wait` currently
+    active in `system` will then trigger on the return from `/bin/true`. However,
+    `system` catches that this return isn't from its child and calls wait again.
+4. Eventually `sleep 100` returns and the `wait` currently blocked in `system` will
+   properly trigger and `system` exits.
+5. `pclose` calls `wait` to wait for `/bin/true` to exit. However, `system` already
+   waited on it. There is no facility to *unwait* for something, `/bin/true` was
+   waited upon and is now completely gone. As such, `pclose` will just block waiting
+   for `/bin/true` to exit, meaning it'll block forever.
+
+This is why we need `waitpid`, to wait specifically for what we want.
+
+## 15.7
+```
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int
+main(void)
+{
+    int fds[2];
+    pid_t pid;
+    fd_set rfds;
+    struct timeval tv;
+    int retval;
+
+    // 0 is read end, 1 is write end.
+    pipe(fds);
+
+    /* Watch stdin (fd 0) to see when it has input. */
+    FD_ZERO(&rfds);
+    FD_SET(fds[0], &rfds);
+
+    if ((pid = fork()) < 0) {
+        perror("fork err");
+        return -1;
+    } else if (pid == 0) { // Child
+        // After 5 seconds the parent, which is looping select, will see
+        // that the pipe has been closed.
+        sleep(5);
+        close(fds[1]);
+        printf("Closed pipe write end\n");
+        exit(0);
+    }
+
+    /* Wait up to one second. */
+    tv.tv_sec = 1;
+    tv.tv_usec = 0;
+
+    while (1) {
+        write(fds[1], "hey\n", 4);
+        // The first arg is the highest descriptor to check up to.
+        retval = select(fds[0]+1, &rfds, NULL, NULL, &tv);
+        /* Don't rely on the value of tv now! */
+
+        if (retval == -1)
+            perror("select()");
+        else if (retval) {
+            printf("Data is available now.\n");
+            /* FD_ISSET(0, &rfds) will be true. */
+        }
+        else {
+            printf("%d No data within one second.\n", retval);
+            tv.tv_sec = 1;
+            tv.tv_usec = 0;
+        }
+    }
+    printf("blah\n");
+    waitpid(pid, NULL, 0);
+
+    exit(EXIT_SUCCESS);
+}
+```
+
+Blargh this is a lot of work for seemingly arbitrary per-system behaviour, just go 
+check out the answer. The above code seems to contradict what they say happens, it
+just looks like it blocks?
+
+## 15.8
+The child's standard error would just go to whatever the parent's standard error is. To redirect standard error to standard out, and hence back to the parent (i.e. 
+through the pipe, since the parent reads through the pipe from the child), you can
+add this shell redirection to the cmdstring: `2>&1`.
+
+## 15.9
+From the manpages:
+
+> The pclose() function waits for the associated process to terminate and returns 
+the exit status of the command as returned by wait4(2).
+
+When the process terminates, the shell waits on it. The shell then exits, returning
+whatever value the *cmdstring* process returned (which you can retrieve by calling
+`pclose`).
+
+## 15.10
+You have to open it twice, once fo reading and one for writing. To avoid deadlocking
+we have to do a non-blocking read-only `open` first, followed by a blocking write-only `open`. We then turn off non-blocking for the read descriptor, like with
+fcntl or something.
+
+## 15.11
+The identifier of the message queue. The queue would have to allow the appropriate
+level of access (probably world-read, for a random malicious process). It would
+interfere with the running of the server/clients though, because each would probably
+be expecting messages to exist on the queue that aren't there.
+
+## 15.12
+```c
+#include <stdio.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+
+#define MYKEY 5
+
+int main(int argc, char *argv[]) {
+    int  qid; // message queue id
+    int  i;
+    char mymsg[64];
+    char myreceived[64];
+
+    unsigned long long_bytes = sizeof(long) / 8;
+
+    for (i = 0; i < 5; i++) {
+        // Shouldn't need IPC_EXCL, there shouldn't be a queue 
+        // that already exists at this key.
+        if ((qid = msgget(MYKEY, IPC_CREAT)) == -1) {
+            perror("msgget error");
+            return -1;
+        }
+        printf("qid: %d\n", qid);
+        msgctl(qid, IPC_RMID, NULL);
+    }
+
+    for (i = 0; i < 5; i++) {
+        // Shouldn't need IPC_EXCL, there shouldn't be a queue 
+        // that already exists at this key.
+        if ((qid = msgget(IPC_PRIVATE, IPC_CREAT|0200)) == -1) {
+            perror("msgget error");
+            return -1;
+        }
+        // First copy in the message type (we choose this and interpret
+        // it however we want, 4 is just a random choice here).
+        // See chapter 15.7 for another way to assemble the message (with a struct).
+        // Also see memcpy_test.c in other for some experimentation about this.
+        long code = 4;
+        memcpy(mymsg, &code, long_bytes);
+        memcpy(mymsg+long_bytes, "hello!\0", 7);
+        if (msgsnd(qid, &mymsg, long_bytes+7, 0) == -1) {
+            perror("msgsnd error");
+            return -1;
+        }
+        // Not specified in the question, but we receive the message too just
+        // to see that the msgsnd worked.
+        if (msgrcv(qid, &mymsg, 64, 0, 0) == -1) {
+            perror("msgsnd error");
+            return -1;
+        }
+        // Note that the message code isn't copied into mymsg here.
+        printf("Received message: %s\n", myreceived);
+    }
+    return 0;
+}
+```
+
+TODO test this on a linux system (originally written on Windows and all this
+System V IPC stuff isn't implemented on WSL / Bash for Ubuntu for Windows).
+Run `ipcs` to see that the queues exist, check the identifiers, etc.
+
+## 15.13
+It depends on who is building the linked list. If it's just one process
+(i.e. a server) then you just need to make sure that nothing tries to access
+the linked list before it is fully built. You can use a mutex, semaphore or
+record locking for this. If multiple processes modify it throughout it's life, 
+you'll need more complicated synchronisation, probably record locking (for that
+handy multiple reads locking), or perhaps mutexes.
+
+Just look at the answer, the above answer goes off on a bit of a tangent. The
+important part is that pointers in a linked list shouldn't be to absolute
+addresses, since each process can "mount" the shared memory in a different
+location. Instead the addresses should be relative to the start of the shared
+memory segment, like offsets.
+
+## 15.14
+The code in question is `../ipc1/devzero.c`. `i` increases by 2 in the parent
+and child, so the parent `i` goes `0, 2, 4, ...`. The child is `1, 3, 5, ...`.
+This incrementing alternates, so the value that is printed is `1, 2, 3, 4, 5, ...`.
+The long value in shared memory is initialised to `0` because the `mmap`
+initially opens from `/dev/zero`. The value in shared memory goes `1, 2, 3, ...`
+where the parent and child take turns in incrementing it. The value returned
+by update is the previous value, so whatever the other process just set it to.
+
+The above is correct, but the timeline in the answer describes this much more
+concisely.
+
+## 15.15
+15.15 to 15.18 are all related, you can do these later. The text recommends that 
+we don't use the constructs in 15.15 and 15.16 in new programs anyway. TODO.
