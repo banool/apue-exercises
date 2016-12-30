@@ -32,6 +32,7 @@ marker_nocompile = "NO"
 source = "exercises.md"
 targetDir = "code"
 libDir = "../lib"
+libIncludes = ["error"] # lib files to always include without .c
 
 clean = False
 forceCompile = False
@@ -121,8 +122,9 @@ def writeCode(code, codeFName, compiledFName):
             f.write("{}\n".format(i))
 
     # Check for user headers to be included. This is pretty primitive.
-    includes = []
+    includeNames = []
     for line in code:
+        line = line.rstrip()
         name = None
         # Looking for #include "myheader.h" for example.
         if line[:10] == "#include \"":
@@ -131,8 +133,16 @@ def writeCode(code, codeFName, compiledFName):
             name = line[13:-3]
         if name:
             if name != "apue":
-                path = os.path.join(libDir, name)
-                includes.append(""""{}.c" """.format(path))
+                includeNames.append(name)
+
+    # Add the libIncludes and get rid of duplicates (if the code has
+    # the file already included with the //-#include ".c" notation).
+    allIncludes = list(set(includeNames + libIncludes))
+
+    includes = []
+    for name in allIncludes:
+        path = os.path.join(libDir, name)
+        includes.append(""""{}.c" """.format(path))
 
     # Constructing the string for the additional files with which to compile.
     from operator import add as op_add
@@ -143,7 +153,7 @@ def writeCode(code, codeFName, compiledFName):
 
     # Compile the code.
     args = (libDir, codeFName, includes, compiledFName)
-    command = """gcc -Wall -pthread -std=c99 -g -I{} -D_GNU_SOURCE "{}" {} -o "{}" -lrt""".format(*args)
+    command = """gcc -Wall -pthread -std=c99 -g -I{} -includeapue.h -D_GNU_SOURCE "{}" {} -o "{}" -lrt""".format(*args)
     print(command)
     os.system(command)
 
