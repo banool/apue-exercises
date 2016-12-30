@@ -17,8 +17,8 @@ FILE *tmp;
 //int counter = 1;
 
 static volatile sig_atomic_t sigflag; /* set nonzero by sig handler */ 
-static sigset_t newmask, oldmask, zeromask; 
-static void sig_usr (int signo) { sigflag = 1; }
+//static sigset_t newmask, oldmask, zeromask; 
+//static void sig_usr (int signo) { sigflag = 1; }
 
 int main(int argc, char *argv[]) {
     

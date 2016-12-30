@@ -1132,8 +1132,8 @@ FILE *tmp;
 //int counter = 1;
 
 static volatile sig_atomic_t sigflag; /* set nonzero by sig handler */ 
-static sigset_t newmask, oldmask, zeromask; 
-static void sig_usr (int signo) { sigflag = 1; }
+//static sigset_t newmask, oldmask, zeromask; 
+//static void sig_usr (int signo) { sigflag = 1; }
 
 int main(int argc, char *argv[]) {
     
@@ -1232,6 +1232,9 @@ void sig_int(int arg) {
 }
 
 ```
+
+TODO the above code seems incomplete upon checking it later. What are all
+the sigmasks for? And the sig_usr function?
 
 ## 10.7
 By resetting the disposition and then killing it with SIGABRT for real, the 
@@ -2415,7 +2418,7 @@ main(int argc, char *argv[])
 
 If you use this (just like you would use mcopy2), you'll see that it still works.
 
-#  15
+#  15 Interprocess Communication
 ## 15.1
 Firstly do this: `export PAGER=/bin/less`. If you run the program (pipe2.c) without
 modifying it, you'll see that you get (END) at the bottom indicating that the pager
@@ -2657,20 +2660,31 @@ be expecting messages to exist on the queue that aren't there.
 ```c
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
 
 #define MYKEY 5
+#define MSGLEN 32
+
+unsigned long long_bytes = sizeof(long);
+
+struct mymsgbuf {
+    long mtype;
+    char mtext[MSGLEN];    
+};
 
 int main(int argc, char *argv[]) {
     int  qid; // message queue id
     int  i;
-    char mymsg[64];
-    char myreceived[64];
+    //char mymsg[64];
+    //char myreceived[MSGLEN];
 
-    unsigned long long_bytes = sizeof(long) / 8;
+    struct mymsgbuf mymsgbuf;
+    struct mymsgbuf bufrecv;
 
+    printf("First loop\n");
     for (i = 0; i < 5; i++) {
         // Shouldn't need IPC_EXCL, there shouldn't be a queue 
         // that already exists at this key.
@@ -2682,10 +2696,11 @@ int main(int argc, char *argv[]) {
         msgctl(qid, IPC_RMID, NULL);
     }
 
+    printf("Second loop\n");
     for (i = 0; i < 5; i++) {
         // Shouldn't need IPC_EXCL, there shouldn't be a queue 
         // that already exists at this key.
-        if ((qid = msgget(IPC_PRIVATE, IPC_CREAT|0200)) == -1) {
+        if ((qid = msgget(IPC_PRIVATE, IPC_CREAT|0600)) == -1) {
             perror("msgget error");
             return -1;
         }
@@ -2694,20 +2709,30 @@ int main(int argc, char *argv[]) {
         // See chapter 15.7 for another way to assemble the message (with a struct).
         // Also see memcpy_test.c in other for some experimentation about this.
         long code = 4;
+        /*
         memcpy(mymsg, &code, long_bytes);
         memcpy(mymsg+long_bytes, "hello!\0", 7);
-        if (msgsnd(qid, &mymsg, long_bytes+7, 0) == -1) {
+        */
+
+        // UPDATE: I'm questioning here whether msgsnd/msgrcv likes the way
+        // I've assembled this, it may not be the valid struct that it wants.
+        // See: https://stackoverflow.com/questions/2748995/c-struct-memory-layout
+        // Instead we now just make the struct:
+        mymsgbuf.mtype = code;
+        strncpy(mymsgbuf.mtext, "hello!", MSGLEN);
+        if (msgsnd(qid, &mymsgbuf, 7, 0) == -1) {
             perror("msgsnd error");
             return -1;
         }
-        // Not specified in the question, but we receive the message too just
-        // to see that the msgsnd worked.
-        if (msgrcv(qid, &mymsg, 64, 0, 0) == -1) {
+        // Not specified in the question, but this code just receives the
+        // message just to see that the msgsnd worked. To see the results
+        // from ipcs, comment out this code.
+        /*if (msgrcv(qid, &bufrecv, MSGLEN, 0, 0) == -1) {
             perror("msgsnd error");
             return -1;
         }
         // Note that the message code isn't copied into mymsg here.
-        printf("Received message: %s\n", myreceived);
+        printf("Received message: %s\n", bufrecv.mtext);*/
     }
     return 0;
 }
@@ -2716,6 +2741,13 @@ int main(int argc, char *argv[]) {
 TODO test this on a linux system (originally written on Windows and all this
 System V IPC stuff isn't implemented on WSL / Bash for Ubuntu for Windows).
 Run `ipcs` to see that the queues exist, check the identifiers, etc.
+
+Update: On linux, it looks like the qids just increase. You can also see the
+bytes used (7, for hello!\0) as well as the number of messages on the queue,
+just 1. The key is just 0, which makes sense because they were created with
+IPC_PRIVATE and are hence private queues. I imagine that the queues in the
+previous loop would have keys if they weren't deleted, but I haven't verified
+this.
 
 ## 15.13
 It depends on who is building the linked list. If it's just one process
@@ -2746,3 +2778,438 @@ concisely.
 ## 15.15
 15.15 to 15.18 are all related, you can do these later. The text recommends that 
 we don't use the constructs in 15.15 and 15.16 in new programs anyway. TODO.
+
+#  16 Network IPC: Sockets
+## 16.1
+I have a SO question about this here: https://stackoverflow.com/questions/41390190/determining-endianness-with-htons
+```c
+#include <stdio.h>
+#include <arpa/inet.h>
+
+int main(int argc, char *argv[]) {
+    uint16_t num = 123;
+
+    // htons converts to big endian.
+    // If the result == the original num, the system must already
+    // be big endian. Otherwise the system is little endian.
+    if (htons(num) == num) {
+        printf("big endian\n");
+    } else {
+        printf("little endian\n");
+    }
+}
+```
+
+## 16.2
+```c
+#include <sys/types.h> // For portability
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <time.h>
+//-#include "stat_info.c"
+
+extern void print_stat_info(struct stat statbuf);
+
+int main(int argc, char *argv[]) {
+    int sd;
+    struct stat statbuf;
+
+    if ((sd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
+        perror("socket error");
+        return -1;       
+    }
+    if (fstat(sd, &statbuf) < 0) {
+        perror("fstat error");
+        return -1;
+    }
+    print_stat_info(statbuf);
+}
+```
+
+On my current system (Linux 4.4) it looks like the supported fields are:
+
+- device, though I'm not sure what that means in this case.
+- inode
+- protection
+- number of hard links
+- blocksize perhaps? It might have some meaning.
+
+Below is a main in which we make an ftp server (you'll need to run the script
+as the superuser), so the socket is fully up and ready to do stuff.
+
+```c
+#include "apue.h"
+#include <sys/types.h> // For portability
+#include <sys/socket.h>
+#include <netdb.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <time.h>
+//-#include "../sockets/initsrv2.c"
+//-#include "error.c"
+//-#include "stat_info.c"
+
+#define QLEN 10
+
+#ifndef HOST_NAME_MAX
+#define HOST_NAME_MAX 256
+#endif
+
+extern int initserver(int, const struct sockaddr *, socklen_t, int);
+extern void print_stat_info(struct stat statbuf);
+
+int main(int argc, char *argv[]) {
+
+    struct addrinfo *ailist, *aip;
+    struct addrinfo hint;
+    int             sockfd, err, n;
+    char            *host;
+
+    if ((n = sysconf(_SC_HOST_NAME_MAX)) < 0)
+        n = HOST_NAME_MAX;  /* best guess */
+    if ((host = malloc(n)) == NULL)
+        err_sys("malloc error");
+    if (gethostname(host, n) < 0)
+        err_sys("gethostname error");
+    memset(&hint, 0, sizeof(hint));
+    hint.ai_flags = AI_CANONNAME;
+    hint.ai_socktype = SOCK_STREAM;
+    hint.ai_canonname = NULL;
+    hint.ai_addr = NULL;
+    hint.ai_next = NULL;
+    if ((err = getaddrinfo(host, "ftp", &hint, &ailist)) != 0) {
+        perror(gai_strerror(err));
+        return -1;
+    }
+    for (aip = ailist; aip != NULL; aip = aip->ai_next) {
+        if ((sockfd = initserver(SOCK_STREAM, aip->ai_addr,
+          aip->ai_addrlen, QLEN)) < 0) {
+            perror("initserver error");
+            return -1;
+        }
+    }
+
+    struct stat statbuf;
+    if (fstat(sockfd, &statbuf) < 0) {
+        perror("fstat error");
+        return -1;
+    }
+    print_stat_info(statbuf);
+}
+```
+
+The above code prints the exact same stuff from the call to `stat`. This
+indicates that you don't need to fully do stuff with a socket to populate
+the stat structure.
+
+## 16.3
+TODO
+
+## 16.4
+Below is the server code. 
+
+```c
+#include "apue.h"
+#include <stdio.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+//-#include "../sockets/initsrv2.c"
+
+#define MYPORT 4321
+#define QUEUE_LEN 10
+#define BUFLEN 256
+
+extern int initserver(int, const struct sockaddr *, socklen_t, int);
+int get_num_proc();
+
+int main(int argc, char *argv[]) {
+    struct sockaddr_in myaddr, client;
+    int sfd, clientsfd;
+    char buf[BUFLEN];
+
+    myaddr.sin_family = AF_INET;
+    myaddr.sin_addr.s_addr = INADDR_ANY;
+    myaddr.sin_port = htons (MYPORT); 
+    // See the answer here about INADDR_ANY, about finding where the client
+    // is connected from: https://stackoverflow.com/questions/4046616/sockets-how-to-find-out-what-port-and-address-im-assigned
+
+    if ((sfd = initserver(SOCK_STREAM, (struct sockaddr*) &myaddr, 
+      sizeof(myaddr), QUEUE_LEN)) < 0) {
+        perror("initserver error");
+        return -1;
+    }
+
+    // Block waiting for a client connection.
+    socklen_t clen = (socklen_t)sizeof(client);
+    while ((clientsfd = accept(sfd, (struct sockaddr*) &client, 
+      &clen)) != -1) {
+        // We don't worry with spawning a thread/process to do this task
+        // because it's so quick.
+        if (get_num_proc(&buf, BUFLEN) == -1) {
+            perror("get_num_proc error");
+            return -1;
+        }
+        // +1 so we send the null byte too.
+        if (send(clientsfd, buf, strlen(buf)+1, 0) != strlen(buf)+1) {
+            perror("send error");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+// Stores the number of processes as a string in buf.
+// Originally this returned an integer number, but we have to send it
+// back as a stream of chars anyway so no point converting it twice.
+int get_num_proc(char *buf, int len) {
+    FILE *fp;
+
+    if ((fp = popen("ps aux | wc -l", "r")) == NULL) {
+        return -1;
+    }
+
+    // fgets appends null byte.
+    if (fgets(buf, len, fp))
+        if (ferror(fp))
+            return -1;
+    /*
+    errno = 0;
+    res = strtol(buf, NULL, 10);
+    if (errno != 0)
+        return -1;
+    */
+    pclose(fp);
+    return 0;
+}
+```
+
+Client code:
+
+```
+#include "apue.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+
+#define BUFSIZE 256
+
+int main(int argc, char *argv[]) {
+    // the "in" in sockaddr_in is for internet, not in(coming).
+    struct sockaddr_in serv_addr;
+    struct in_addr address;
+    int sfd;
+    char buf[BUFSIZE];
+
+    if (argc != 3) {
+        printf("Usage: %s <address> <port>\n", argv[0]);
+        return 1;
+    }
+    serv_addr.sin_family = AF_INET;
+    if (inet_aton(argv[1], &address) != 1) {
+        fprintf(stderr, "Invalid address format. Use ipv4 dot notation.\n");
+        return -1;
+    }
+    serv_addr.sin_addr.s_addr = address.s_addr;
+    serv_addr.sin_port = htons(atoi(argv[2]));
+
+    if ((sfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        err_sys("socket error");
+    }
+
+    if (connect(sfd, &serv_addr, sizeof(serv_addr)) == -1) {
+        err_sys("connect error");
+    }
+
+    if (recv(sfd, buf, BUFSIZE, 0) < 0) {
+        err_sys("recv error");
+    }
+
+    close(sfd);
+
+    // The incoming string includes a newline, see fgets.
+    printf("Number of processes running on server: %s", buf);
+
+    return 0;
+}
+```
+
+From this point onwards instead of using `perror()` and `return -1` I'm just
+going to use one of the `err_` functions in `../lib/error.c` and I'll modify
+`to_code.py` accordingly to include `../lib/error.c`.
+
+## 16.5
+The code in question is `../sockets/ruptimed-fd.c`.
+
+Code like this (where it is a modification of the original code that the
+author has provided) has a lot of annoying //-# includes because it is
+usually built with the makefile in its directory. It's becoming apparent
+that just bootlegging their makefile would've been a better solution
+than the hack in my to_code.py program and all these //-# includes.
+
+While at first you think threads, there is a lighter solution to this.
+The below code doesn't wait for the child to finish, instead catching
+SIGCHLD upon the child's termination and waiting on it then.
+
+```c
+#include "apue.h"
+#include <netdb.h> 
+#include <errno.h>
+#include <syslog.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+// This overwrites the original signal. Define after signal.h
+#include <signal.h>
+//-#include "signal.c"
+//-#include "daemonize.c"
+//-#include "../sockets/initsrv2.c"
+//-#include "setfd.c"
+
+#define QLEN 10
+
+#ifndef HOST_NAME_MAX
+#define HOST_NAME_MAX 256
+#endif
+
+extern int initserver(int, const struct sockaddr *, socklen_t, int);
+
+void
+serve(int sockfd)
+{
+    int     clfd;
+    pid_t   pid;
+
+    set_cloexec(sockfd);
+    for (;;) {
+        if ((clfd = accept(sockfd, NULL, NULL)) < 0) {
+            syslog(LOG_ERR, "ruptimed: accept error: %s",
+              strerror(errno));
+            exit(1);
+        }
+        if ((pid = fork()) < 0) {
+            syslog(LOG_ERR, "ruptimed: fork error: %s",
+              strerror(errno));
+            exit(1);
+        } else if (pid == 0) {  /* child */
+            /*
+             * The parent called daemonize ({Prog daemoninit}), so
+             * STDIN_FILENO, STDOUT_FILENO, and STDERR_FILENO
+             * are already open to /dev/null.  Thus, the call to
+             * close doesn't need to be protected by checks that
+             * clfd isn't already equal to one of these values.
+             */
+            if (dup2(clfd, STDOUT_FILENO) != STDOUT_FILENO ||
+              dup2(clfd, STDERR_FILENO) != STDERR_FILENO) {
+                syslog(LOG_ERR, "ruptimed: unexpected error");
+                exit(1);
+            }
+            close(clfd);
+            execl("/usr/bin/uptime", "uptime", (char *)0);
+            syslog(LOG_ERR, "ruptimed: unexpected return from exec: %s",
+              strerror(errno));
+        } else {        /* parent */
+            close(clfd);
+            // waitpid(pid, &status, 0); <- We don't wait anymore.
+        }
+    }
+}
+
+void
+sigchld(int signo) {
+    /* First arg means wait for all children.
+    ** With WNOHANG specified, the call doesn't block.
+    ** If a child returns on this call, the pid of the child
+    ** is returned. If there is no child ready to be waited on,
+    ** waitpid returns 0 with WNOHANG specified.
+    ** As such, this call goes through all waiting children,
+    ** waits on them, and then exits the while loop. */
+    while (waitpid((pid_t)-1, NULL, WNOHANG) > 0);
+}
+
+int
+main(int argc, char *argv[])
+{
+    struct addrinfo *ailist, *aip;
+    struct addrinfo hint;
+    int             sockfd, err, n;
+    char            *host;
+
+    if (argc != 1)
+        err_quit("usage: ruptimed");
+    if ((n = sysconf(_SC_HOST_NAME_MAX)) < 0)
+        n = HOST_NAME_MAX;  /* best guess */
+    if ((host = malloc(n)) == NULL)
+        err_sys("malloc error");
+    if (gethostname(host, n) < 0)
+        err_sys("gethostname error");
+
+    signal(SIGCHLD, sigchld); // The improved signal function.
+    daemonize("ruptimed");
+    memset(&hint, 0, sizeof(hint));
+    hint.ai_flags = AI_CANONNAME;
+    hint.ai_socktype = SOCK_STREAM;
+    hint.ai_canonname = NULL;
+    hint.ai_addr = NULL;
+    hint.ai_next = NULL;
+    if ((err = getaddrinfo(host, "ruptime", &hint, &ailist)) != 0) {
+        syslog(LOG_ERR, "ruptimed: getaddrinfo error: %s",
+          gai_strerror(err));
+        exit(1);
+    }
+    for (aip = ailist; aip != NULL; aip = aip->ai_next) {
+        if ((sockfd = initserver(SOCK_STREAM, aip->ai_addr,
+          aip->ai_addrlen, QLEN)) >= 0) {
+            serve(sockfd);
+            exit(0);
+        }
+    }
+    exit(1);
+}
+```
+
+You might run this and notice that the process doesn't exist. Because 
+the process has been daemonised, no output was printed to the terminal
+about the problem. Instead you have to check `/var/log/syslog`.
+
+Why it actually didn't work is probably something you need to look into. TODO.
+
+## 16.6
+```c
+#include "apue.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#if defined(BSD) || defined(MACOS) || defined(SOLARIS)
+#include <sys/filio.h>
+#endif
+
+int enable_async_io(int sockfd) {
+    if (fcntl(sockfd, F_SETOWN, getpid()) == -1) 
+        return -1;
+    int n = 1; // We want to set this behaviour on.
+    if (ioctl(sockfd, FIOASYNC, &n) == -1)
+        return -1;
+    return 0;
+}
+
+int disable_async_io(int sockfd) {
+    // Doesn't seem like we can undo the socket ownership?
+
+    int n = 0; // We want to set this behaviour on.
+    if (ioctl(sockfd, FIOASYNC, &n) == -1)
+        return -1;
+    return 0;
+}
+
+int main() {
+    return 0;
+}
+```
